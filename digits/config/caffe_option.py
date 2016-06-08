@@ -68,14 +68,16 @@ class CaffeOption(config_option.FrameworkOption):
 
         if value == '<PATHS>':
             # Find the executable
-            executable = cls.find_executable('caffe')
-            if not executable:
-                executable = cls.find_executable('caffe.exe')
-            if not executable:
-                raise config_option.BadValue('caffe binary not found in PATH')
+            executable = cls.find_executable()
             cls.validate_version(executable)
 
             # Find the python module
+            if platform.system()=='Windows':   
+                pythonpath = os.path.join(value, 'pycaffe', 'python')
+                sys.path.insert(0, pythonpath)                 
+            else :
+                pythonpath = os.path.join(value, 'python')
+                sys.path.insert(0, pythonpath)             
             try:
                 imp.find_module('caffe')
             except ImportError:
@@ -86,14 +88,19 @@ class CaffeOption(config_option.FrameworkOption):
             value = os.path.abspath(value)
             if not os.path.isdir(value):
                 raise config_option.BadValue('"%s" is not a directory' % value)
-            expected_path = os.path.join(value, 'build', 'tools', 'caffe')
+            expected_path = cls.find_executable_from_value(value)
             if not os.path.exists(expected_path):
                 raise config_option.BadValue('caffe binary not found at "%s"' % value)
             cls.validate_version(expected_path)
 
             # Find the python module
-            pythonpath = os.path.join(value, 'python')
-            sys.path.insert(0, pythonpath)
+            if platform.system()=='Windows':   
+                pythonpath = os.path.join(value, 'pycaffe', 'python')
+                sys.path.insert(0, pythonpath)                 
+            else :
+                pythonpath = os.path.join(value, 'python')
+                sys.path.insert(0, pythonpath)            
+            
             try:
                 imp.find_module('caffe')
             except ImportError as e:
@@ -104,18 +111,48 @@ class CaffeOption(config_option.FrameworkOption):
                 sys.path.pop(0)
 
             return value
-
     @staticmethod
-    def find_executable(program):
+    def find_executable_from_value(value):
+        """
+        Finds an executable by searching through value
+        Returns the path to the executable or None
+        """ 
+        if platform.system()=='Windows':
+            Programs=['caffe.exe','caffe']
+        elif platform.system()=='Linux' or platform.system()=='Darwin':
+            Programs=['caffe','caffe.bin'] 
+        else:
+            return None
+
+        for program in Programs:
+            executable = os.path.join(value, program)
+            if os.path.isfile(executable) and os.access(executable, os.X_OK):
+                return executable  
+            else:
+                executable = os.path.join(value, 'bin', program)
+                if os.path.isfile(executable) and os.access(executable, os.X_OK):
+                    return executable 
+        return None
+           
+    @staticmethod
+    def find_executable():
         """
         Finds an executable by searching through PATH
         Returns the path to the executable or None
         """
+        if platform.system()=='Windows':
+            Programs=['caffe.exe','caffe']
+        elif platform.system()=='Linux' or platform.system()=='Darwin':
+            Programs=['caffe','caffe.bin'] 
+        else:
+            return None        
+
         for path in os.environ['PATH'].split(os.pathsep):
             path = path.strip('"')
-            executable = os.path.join(path, program)
-            if os.path.isfile(executable) and os.access(executable, os.X_OK):
-                return executable
+            for program in Programs:
+                executable = os.path.join(path, program)
+                if os.path.isfile(executable) and os.access(executable, os.X_OK):
+                    return executable
         return None
 
     @classmethod
@@ -266,11 +303,12 @@ class CaffeOption(config_option.FrameworkOption):
             self._config_dict_value = None
         else:
             if value == '<PATHS>':
-                executable = self.find_executable('caffe')
-                if not executable:
-                    executable = self.find_executable('caffe.exe')
+                executable = self.find_executable()
             else:
-                executable = os.path.join(value, 'build', 'tools', 'caffe')
+                executable = self.find_executable_from_value(value)
+            
+            if not executable:
+                raise config_option.BadValue('caffe binary not found in PATH')            
 
             info_dict = self.get_info(executable)
             version = parse_version(info_dict['ver_str'])
