@@ -20,6 +20,7 @@ class GenericDatasetJob(DatasetJob):
                  label_encoding,
                  batch_size,
                  num_threads,
+                 force_same_shape,
                  extension_id,
                  extension_userdata,
                  **kwargs
@@ -28,6 +29,7 @@ class GenericDatasetJob(DatasetJob):
         self.feature_encoding = feature_encoding
         self.label_encoding = label_encoding
         self.num_threads = num_threads
+        self.force_same_shape = force_same_shape
         self.batch_size = batch_size
         self.extension_id = extension_id
         self.extension_userdata = extension_userdata
@@ -103,8 +105,23 @@ class GenericDatasetJob(DatasetJob):
         Return the mean file (if it exists, or None)
         """
         mean_file = self.create_db_task(constants.TRAIN_DB).mean_file
-        return self.path(mean_file) if mean_file else None
+        return self.path(mean_file) if mean_file else ''
 
     @override
     def job_type(self):
         return 'Generic Dataset'
+
+    @override
+    def json_dict(self, verbose=False):
+        d = super(GenericDatasetJob, self).json_dict(verbose)
+        if verbose:
+            d.update({
+                'create_db_tasks': [{
+                    "name": t.name(),
+                    "stage": t.stage,
+                    "entry_count": t.entry_count,
+                    "feature_db_path": t.dbs['features'],
+                    "label_db_path": t.dbs['labels'],
+                    } for t in self.create_db_tasks()],
+                'feature_dims': self.get_feature_dims()})
+        return d

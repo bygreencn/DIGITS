@@ -101,9 +101,9 @@ return function(p)
 end
 """
     @classmethod
-    def setUpClass(cls):
-        super(BaseViewsTest, cls).setUpClass()
-        if cls.FRAMEWORK=='torch' and not config_value('torch_root'):
+    def setUpClass(cls, **kwargs):
+        super(BaseViewsTest, cls).setUpClass(**kwargs)
+        if cls.FRAMEWORK == 'torch' and not config_value('torch_root'):
             raise unittest.SkipTest('Torch not found')
 
     @classmethod
@@ -146,10 +146,11 @@ class BaseViewsTestWithAnyDataset(BaseViewsTest):
     TRAIN_EPOCHS = 3
     LR_POLICY = None
     LEARNING_RATE = None
+    BATCH_SIZE = 10
 
     @classmethod
-    def setUpClass(cls):
-        super(BaseViewsTestWithAnyDataset, cls).setUpClass()
+    def setUpClass(cls, **kwargs):
+        super(BaseViewsTestWithAnyDataset, cls).setUpClass(**kwargs)
         cls.created_models = []
 
     @classmethod
@@ -176,7 +177,7 @@ class BaseViewsTestWithAnyDataset(BaseViewsTest):
                 'dataset':          cls.dataset_id,
                 'method':           'custom',
                 'custom_network':   cls.network(),
-                'batch_size':       10,
+                'batch_size':       cls.BATCH_SIZE,
                 'train_epochs':     cls.TRAIN_EPOCHS,
                 'random_seed':      0xCAFEBABE,
                 'framework':        cls.FRAMEWORK,
@@ -237,9 +238,10 @@ class BaseViewsTestWithModelWithAnyDataset(BaseViewsTestWithAnyDataset):
     Provides a model
     """
     @classmethod
-    def setUpClass(cls):
-        super(BaseViewsTestWithModelWithAnyDataset, cls).setUpClass()
-        cls.model_id = cls.create_model(json=True)
+    def setUpClass(cls, **kwargs):
+        use_mean = kwargs.pop('use_mean', None)
+        super(BaseViewsTestWithModelWithAnyDataset, cls).setUpClass(**kwargs)
+        cls.model_id = cls.create_model(json=True, use_mean=use_mean)
         assert cls.model_wait_completion(cls.model_id) == 'Done', 'create failed'
 
 class BaseTestViews(BaseViewsTest):
@@ -483,6 +485,11 @@ class BaseTestCreation(BaseViewsTestWithDataset):
         content2.pop('id')
         content1.pop('directory')
         content2.pop('directory')
+        content1.pop('creation time')
+        content2.pop('creation time')
+        content1.pop('job id')
+        content2.pop('job id')
+
         assert (content1 == content2), 'job content does not match'
 
         job1 = digits.webapp.scheduler.get_job(job1_id)
@@ -497,6 +504,15 @@ class BaseTestCreatedWithAnyDataset(BaseViewsTestWithModelWithAnyDataset):
     def test_save(self):
         job = digits.webapp.scheduler.get_job(self.model_id)
         assert job.save(), 'Job failed to save'
+
+    def test_get_snapshot(self):
+        job  = digits.webapp.scheduler.get_job(self.model_id)
+        task = job.train_task()
+        f = task.get_snapshot(-1)
+
+        assert f, "Failed to load snapshot"
+        filename = task.get_snapshot_filename(-1)
+        assert filename, "Failed to get filename"
 
     def test_download(self):
         for extension in ['tar', 'zip', 'tar.gz', 'tar.bz2']:
@@ -592,6 +608,8 @@ class BaseTestCreatedWithAnyDataset(BaseViewsTestWithModelWithAnyDataset):
         assert headers is not None, 'unrecognized page format'
 
     def test_infer_db(self):
+        if self.val_db_path is None:
+            raise unittest.SkipTest('Class has no validation db')
         rv = self.app.post(
                 '/models/images/generic/infer_db?job_id=%s' % self.model_id,
                 data = {'db_path': self.val_db_path}
@@ -639,11 +657,13 @@ class BaseTestCreatedWithAnyDataset(BaseViewsTestWithModelWithAnyDataset):
         assert 'outputs' in data, 'invalid response'
 
     def test_infer_db_json(self):
+        if self.val_db_path is None:
+            raise unittest.SkipTest('Class has no validation db')
         rv = self.app.post(
                 '/models/images/generic/infer_db.json?job_id=%s' % self.model_id,
                 data = {'db_path': self.val_db_path}
                 )
-        assert rv.status_code == 200, 'POST failed with %s\n\n%s' % (rv.status_code, body)
+        assert rv.status_code == 200, 'POST failed with %s\n\n%s' % (rv.status_code, rv.data)
         data = json.loads(rv.data)
         assert 'outputs' in data, 'invalid response'
 
@@ -663,27 +683,138 @@ class BaseTestCreatedWithGradientDataExtension(BaseTestCreatedWithAnyDataset,
     EXTENSION_ID = "image-gradients"
 
     @classmethod
-    def setUpClass(cls):
-        super(BaseTestCreatedWithGradientDataExtension, cls).setUpClass()
+    def setUpClass(cls, **kwargs):
         if not hasattr(cls, 'imageset_folder'):
             # Create test image
             cls.imageset_folder = tempfile.mkdtemp()
-            image_size = 32
-            yy, xx = np.mgrid[:image_size,
-                              :image_size].astype('float')
+            image_width = cls.IMAGE_WIDTH
+            image_height = cls.IMAGE_HEIGHT
+            yy, xx = np.mgrid[:image_height,
+                              :image_width].astype('float')
             xslope, yslope = 0.5, 0.5
-            a = xslope * 255 / image_size
-            b = yslope * 255 / image_size
-            test_image = a * (xx - image_size/2) + b * (yy - image_size/2) + 127.5
+            a = xslope * 255 / image_width
+            b = yslope * 255 / image_height
+            test_image = a * (xx - image_width/2) + b * (yy - image_height/2) + 127.5
             test_image = test_image.astype('uint8')
             pil_img = PIL.Image.fromarray(test_image)
             cls.test_image = os.path.join(cls.imageset_folder, 'test.png')
             pil_img.save(cls.test_image)
-            # Save val DB path
-            json = cls.get_dataset_json()
-            cls.val_db_path = os.path.join(json["directory"], "val_db", "features")
-        cls.model_id = cls.create_model(json=True)
-        assert cls.model_wait_completion(cls.model_id) == 'Done', 'create failed'
+        # note: model created in BaseTestCreatedWithAnyDataset.setUpClass method
+        super(BaseTestCreatedWithGradientDataExtension, cls).setUpClass()
+
+
+class BaseTestCreatedWithImageProcessingExtension(
+        BaseTestCreatedWithAnyDataset,
+        digits.dataset.generic.test_views.BaseViewsTestWithDataset):
+    """
+    Test Image processing extension with a dummy identity network
+    """
+
+    CAFFE_NETWORK = \
+"""
+layer {
+  name: "identity"
+  type: "Power"
+  bottom: "data"
+  top: "output"
+}
+layer {
+  name: "loss"
+  type: "EuclideanLoss"
+  bottom: "output"
+  bottom: "label"
+  top: "loss"
+  exclude { stage: "deploy" }
+}
+"""
+
+    TORCH_NETWORK = \
+"""
+return function(p)
+    return {
+        -- simple identity network
+        model = nn.Sequential():add(nn.Identity()),
+        loss = nn.MSECriterion(),
+    }
+end
+"""
+
+    EXTENSION_ID = "image-processing"
+    VARIABLE_SIZE_DATASET = False
+    NUM_IMAGES = 100
+    MEAN = 'none'
+
+    @classmethod
+    def setUpClass(cls, **kwargs):
+        if cls.VARIABLE_SIZE_DATASET:
+            cls.BATCH_SIZE = 1
+            cls.create_variable_size_random_imageset(
+                num_images=cls.NUM_IMAGES)
+        else:
+            cls.create_random_imageset(
+                num_images=cls.NUM_IMAGES,
+                image_width=cls.IMAGE_WIDTH,
+                image_height=cls.IMAGE_HEIGHT)
+        super(BaseTestCreatedWithImageProcessingExtension, cls).setUpClass(
+            feature_folder=cls.imageset_folder,
+            label_folder=cls.imageset_folder,
+            channel_conversion='L',
+            dsopts_force_same_shape='0' if cls.VARIABLE_SIZE_DATASET else '1',
+            use_mean=cls.MEAN)
+
+    def test_infer_one_json(self):
+        image_path = os.path.join(self.imageset_folder, self.test_image)
+        with open(image_path, 'rb') as infile:
+            # StringIO wrapping is needed to simulate POST file upload.
+            image_upload = (StringIO(infile.read()), 'image.png')
+
+        rv = self.app.post(
+            '/models/images/generic/infer_one.json?job_id=%s' % self.model_id,
+            data={'image_file': image_upload}
+            )
+        assert rv.status_code == 200, 'POST failed with %s' % rv.status_code
+        data = json.loads(rv.data)
+        data_shape = np.array(data['outputs']['output']).shape
+        if not self.VARIABLE_SIZE_DATASET:
+            assert data_shape == (1, self.CHANNELS, self.IMAGE_WIDTH, self.IMAGE_HEIGHT)
+
+    def test_infer_one_noresize_json(self):
+        # create large random image
+        shape = (self.CHANNELS, 10*self.IMAGE_HEIGHT, 5*self.IMAGE_WIDTH)
+        x = np.random.randint(
+                    low=0,
+                    high=256,
+                    size=shape)
+        if self.CHANNELS == 1:
+            # drop channel dimension
+            x = x[0]
+        x = x.astype('uint8')
+        pil_img = PIL.Image.fromarray(x)
+        # create output stream
+        s = StringIO()
+        pil_img.save(s, format="png")
+        # create input stream
+        s = StringIO(s.getvalue())
+        image_upload = (s, 'image.png')
+        # post request
+        rv = self.app.post(
+            '/models/images/generic/infer_one.json?job_id=%s' % self.model_id,
+            data={'image_file': image_upload, 'dont_resize':'y'}
+            )
+        assert rv.status_code == 200, 'POST failed with %s' % rv.status_code
+        data = json.loads(rv.data)
+        data_shape = np.array(data['outputs']['output']).shape
+        assert data_shape == (1,) + shape
+
+    def test_infer_db(self):
+        if self.VARIABLE_SIZE_DATASET:
+            raise unittest.SkipTest('Skip variable-size inference test')
+        super(BaseTestCreatedWithImageProcessingExtension, self).test_infer_db()
+
+    def test_infer_db_json(self):
+        if self.VARIABLE_SIZE_DATASET:
+            raise unittest.SkipTest('Skip variable-size inference test')
+        super(BaseTestCreatedWithImageProcessingExtension, self).test_infer_db_json()
 
 
 class BaseTestDatasetModelInteractions(BaseViewsTestWithDataset):
@@ -845,6 +976,29 @@ class TestCaffeCreated(BaseTestCreated):
 class TestCaffeCreatedWithGradientDataExtension(BaseTestCreatedWithGradientDataExtension):
     FRAMEWORK = 'caffe'
 
+class TestCaffeCreatedWithGradientDataExtensionNoValSet(BaseTestCreatedWithGradientDataExtension):
+    FRAMEWORK = 'caffe'
+    @classmethod
+    def setUpClass(cls):
+        super(TestCaffeCreatedWithGradientDataExtensionNoValSet, cls).setUpClass(val_image_count=0)
+
+class TestCaffeCreatedWithImageProcessingExtensionMeanImage(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'image'
+    FRAMEWORK = 'caffe'
+
+class TestCaffeCreatedWithImageProcessingExtensionMeanPixel(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'pixel'
+    FRAMEWORK = 'caffe'
+
+class TestCaffeCreatedWithImageProcessingExtensionMeanNone(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'none'
+    FRAMEWORK = 'caffe'
+
+class TestCaffeCreatedVariableSizeDataset(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'none'
+    FRAMEWORK = 'caffe'
+    VARIABLE_SIZE_DATASET = True
+
 class TestCaffeDatasetModelInteractions(BaseTestDatasetModelInteractions):
     FRAMEWORK = 'caffe'
 
@@ -865,6 +1019,29 @@ class TestTorchCreated(BaseTestCreated):
 
 class TestTorchCreatedWithGradientDataExtension(BaseTestCreatedWithGradientDataExtension):
     FRAMEWORK = 'torch'
+
+class TestTorchCreatedWithGradientDataExtensionNoValSet(BaseTestCreatedWithGradientDataExtension):
+    FRAMEWORK = 'torch'
+    @classmethod
+    def setUpClass(cls):
+        super(TestTorchCreatedWithGradientDataExtensionNoValSet, cls).setUpClass(val_image_count=0)
+
+class TestTorchCreatedWithImageProcessingExtensionMeanImage(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'image'
+    FRAMEWORK = 'torch'
+
+class TestTorchCreatedWithImageProcessingExtensionMeanPixel(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'pixel'
+    FRAMEWORK = 'torch'
+
+class TestTorchCreatedWithImageProcessingExtensionMeanNone(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'none'
+    FRAMEWORK = 'torch'
+
+class TestTorchCreatedVariableSizeDataset(BaseTestCreatedWithImageProcessingExtension):
+    MEAN = 'none'
+    FRAMEWORK = 'torch'
+    VARIABLE_SIZE_DATASET = True
 
 class TestTorchCreatedCropInNetwork(BaseTestCreatedCropInNetwork):
     FRAMEWORK = 'torch'
@@ -1037,4 +1214,3 @@ layer {
   exclude { stage: "deploy" }
 }
 """
-

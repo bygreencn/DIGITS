@@ -5,7 +5,7 @@
 
 {% block job_content %}
 
-<script src="{{ url_for('static', filename='js/model-graphs.js') }}"></script>
+<script src="{{ url_for('static', filename='js/model-graphs.js', ver=dir_hash) }}"></script>
 
 {% set task = job.train_task() %}
 
@@ -179,6 +179,26 @@ updateSnapshotList({% autoescape false %}{{task.snapshot_list()}}{% endautoescap
                             });
                         $("#view_extension_id").change();
                     </script>
+                </div>
+
+                <div class="row">
+                    <div class="col-sm-12">
+                        <h3>Inference Options</h3>
+                    </div>
+                    <div class="col-sm-12">
+                        <div class="form-group">
+                            <label for="dont_resize">
+                                <input id="dont_resize" name="dont_resize" type="checkbox" value="y">
+                                Do not resize input image(s)
+                            </label>
+                            <span name="dont_resize_explanation"
+                                class="explanation-tooltip glyphicon glyphicon-question-sign"
+                                data-container="body"
+                                title="By default input images are resized to the dimensions of the images in the dataset. Check this box
+                                to skip this stage. This may be useful for models that can take inputs of various dimensions."
+                                ></span>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="row">

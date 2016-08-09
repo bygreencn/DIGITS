@@ -205,6 +205,18 @@ def create(extension_id=None):
                     selected_gpus = [str(form.select_gpu.data)]
                     gpu_count = None
 
+            # Set up data augmentation structure
+            data_aug = {}
+            data_aug['flip']     = form.aug_flip.data
+            data_aug['quad_rot'] = form.aug_quad_rot.data
+            data_aug['rot']      = form.aug_rot.data
+            data_aug['scale']    = form.aug_scale.data
+            data_aug['noise']    = form.aug_noise.data
+            data_aug['hsv_use']  = form.aug_hsv_use.data
+            data_aug['hsv_h']    = form.aug_hsv_h.data
+            data_aug['hsv_s']    = form.aug_hsv_s.data
+            data_aug['hsv_v']    = form.aug_hsv_v.data
+
             # Python Layer File may be on the server or copied from the client.
             fs.copy_python_layer_file(
                 bool(form.python_layer_from_client.data),
@@ -232,6 +244,7 @@ def create(extension_id=None):
                         random_seed = form.random_seed.data,
                         solver_type = form.solver_type.data,
                         shuffle = form.shuffle.data,
+                        data_aug = data_aug,
                         )
                     )
 
@@ -307,15 +320,21 @@ def infer_one():
     if 'show_visualizations' in flask.request.form and flask.request.form['show_visualizations']:
         layers = 'all'
 
+    if 'dont_resize' in flask.request.form and flask.request.form['dont_resize']:
+        resize = False
+    else:
+        resize = True
+
     # create inference job
     inference_job = ImageInferenceJob(
-                username    = utils.auth.get_username(),
-                name        = "Infer One Image",
-                model       = model_job,
-                images      = [image_path],
-                epoch       = epoch,
-                layers      = layers
-                )
+        username= utils.auth.get_username(),
+        name= "Infer One Image",
+        model=model_job,
+        images=[image_path],
+        epoch=epoch,
+        layers=layers,
+        resize=resize,
+        )
 
     # schedule tasks
     scheduler.add_job(inference_job)
@@ -335,15 +354,17 @@ def infer_one():
     if remove_image_path:
         os.remove(image_path)
 
-    image = None
-    inference_view_html = None
     if inputs is not None and len(inputs['data']) == 1:
         image = utils.image.embed_image_html(inputs['data'][0])
-        visualizations, summary = get_inference_visualizations(
+        visualizations, header_html = get_inference_visualizations(
             model_job.dataset,
             inputs,
             outputs)
         inference_view_html = visualizations[0]
+    else:
+        image = None
+        inference_view_html = None
+        header_html = None
 
     if request_wants_json():
         return flask.jsonify({'outputs': dict((name, blob.tolist())
@@ -355,6 +376,7 @@ def infer_one():
             job=inference_job,
             image_src=image,
             inference_view_html=inference_view_html,
+            header_html=header_html,
             visualizations=model_visualization,
             total_parameters=sum(v['param_count'] for v in model_visualization
                                  if v['vis_type'] == 'Weights'),
@@ -381,15 +403,21 @@ def infer_db():
     if 'snapshot_epoch' in flask.request.form:
         epoch = float(flask.request.form['snapshot_epoch'])
 
+    if 'dont_resize' in flask.request.form and flask.request.form['dont_resize']:
+        resize = False
+    else:
+        resize = True
+
     # create inference job
     inference_job = ImageInferenceJob(
-                username    = utils.auth.get_username(),
-                name        = "Infer Many Images",
-                model       = model_job,
-                images      = db_path,
-                epoch       = epoch,
-                layers      = 'none',
-                )
+        username=utils.auth.get_username(),
+        name="Infer Many Images",
+        model=model_job,
+        images=db_path,
+        epoch=epoch,
+        layers='none',
+        resize=resize,
+        )
 
     # schedule tasks
     scheduler.add_job(inference_job)
@@ -412,13 +440,13 @@ def infer_db():
 
     if inputs is not None:
         keys = [str(idx) for idx in inputs['ids']]
-        inference_views_html, summary_html = get_inference_visualizations(
+        inference_views_html, header_html = get_inference_visualizations(
             model_job.dataset,
             inputs,
             outputs)
     else:
         inference_views_html = None
-        summary_html = None
+        header_html = None
         keys = None
 
     if request_wants_json():
@@ -433,7 +461,7 @@ def infer_db():
             job=inference_job,
             keys=keys,
             inference_views_html=inference_views_html,
-            summary_html=summary_html,
+            header_html=header_html,
             ), status_code
 
 
@@ -465,6 +493,11 @@ def infer_many():
     if 'snapshot_epoch' in flask.request.form:
         epoch = float(flask.request.form['snapshot_epoch'])
 
+    if 'dont_resize' in flask.request.form and flask.request.form['dont_resize']:
+        resize = False
+    else:
+        resize = True
+
     paths = []
 
     for line in image_list.readlines():
@@ -489,13 +522,14 @@ def infer_many():
 
     # create inference job
     inference_job = ImageInferenceJob(
-                username    = utils.auth.get_username(),
-                name        = "Infer Many Images",
-                model       = model_job,
-                images      = paths,
-                epoch       = epoch,
-                layers      = 'none'
-                )
+        username=utils.auth.get_username(),
+        name="Infer Many Images",
+        model=model_job,
+        images=paths,
+        epoch=epoch,
+        layers='none',
+        resize=resize,
+        )
 
     # schedule tasks
     scheduler.add_job(inference_job)
@@ -518,13 +552,13 @@ def infer_many():
 
     if inputs is not None:
         paths = [paths[idx] for idx in inputs['ids']]
-        inference_views_html, summary_html = get_inference_visualizations(
+        inference_views_html, header_html = get_inference_visualizations(
             model_job.dataset,
             inputs,
             outputs)
     else:
         inference_views_html = None
-        summary_html = None
+        header_html = None
 
     if request_wants_json():
         result = {}
@@ -538,7 +572,7 @@ def infer_many():
             job=inference_job,
             paths=paths,
             inference_views_html=inference_views_html,
-            summary_html=summary_html,
+            header_html=header_html,
             ), status_code
 
 
@@ -590,10 +624,10 @@ def get_inference_visualizations(dataset, inputs, outputs):
         template, context = extension.get_view_template(data)
         visualizations.append(
             flask.render_template_string(template, **context))
-    # get summary
-    template, context = extension.get_summary_template()
-    summary = flask.render_template_string(template, **context) if template else None
-    return visualizations, summary
+    # get header
+    template, context = extension.get_header_template()
+    header = flask.render_template_string(template, **context) if template else None
+    return visualizations, header
 
 
 def get_previous_networks():

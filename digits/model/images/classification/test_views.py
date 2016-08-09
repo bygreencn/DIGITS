@@ -145,6 +145,15 @@ class BaseViewsTestWithDataset(BaseViewsTest,
     LR_POLICY = None
     LR_MULTISTEP_VALUES = None
     LEARNING_RATE = None
+    AUG_FLIP = None
+    AUG_QUAD_ROT = None
+    AUG_ROT = None
+    AUG_SCALE = None
+    AUG_NOISE = None
+    AUG_HSV_USE = None
+    AUG_HSV_H = None
+    AUG_HSV_S = None
+    AUG_HSV_V = None
 
     @classmethod
     def setUpClass(cls):
@@ -189,6 +198,26 @@ class BaseViewsTestWithDataset(BaseViewsTest,
             data['learning_rate'] = cls.LEARNING_RATE
         if cls.LR_MULTISTEP_VALUES is not None:
             data['lr_multistep_values'] = cls.LR_MULTISTEP_VALUES
+
+        if cls.AUG_FLIP is not None:
+            data['aug_flip'] = cls.AUG_FLIP
+        if cls.AUG_QUAD_ROT is not None:
+            data['aug_quad_rot'] = cls.AUG_QUAD_ROT
+        if cls.AUG_ROT is not None:
+            data['aug_rot'] = cls.AUG_ROT
+        if cls.AUG_SCALE is not None:
+            data['aug_scale'] = cls.AUG_SCALE
+        if cls.AUG_NOISE is not None:
+            data['aug_noise'] = cls.AUG_NOISE
+        if cls.AUG_HSV_USE is not None:
+            data['aug_hsv_use'] = cls.AUG_HSV_USE
+        if cls.AUG_HSV_H is not None:
+            data['aug_hsv_h'] = cls.AUG_HSV_H
+        if cls.AUG_HSV_S is not None:
+            data['aug_hsv_s'] = cls.AUG_HSV_S
+        if cls.AUG_HSV_V is not None:
+            data['aug_hsv_v'] = cls.AUG_HSV_V
+
         data.update(kwargs)
 
         request_json = data.pop('json', False)
@@ -508,6 +537,11 @@ class BaseTestCreation(BaseViewsTestWithDataset):
         content2.pop('id')
         content1.pop('directory')
         content2.pop('directory')
+        content1.pop('creation time')
+        content2.pop('creation time')
+        content1.pop('job id')
+        content2.pop('job id')
+
         assert (content1 == content2), 'job content does not match'
 
         job1 = digits.webapp.scheduler.get_job(job1_id)
@@ -521,6 +555,15 @@ class BaseTestCreated(BaseViewsTestWithModel):
     def test_save(self):
         job = digits.webapp.scheduler.get_job(self.model_id)
         assert job.save(), 'Job failed to save'
+
+    def test_get_snapshot(self):
+        job  = digits.webapp.scheduler.get_job(self.model_id)
+        task = job.train_task()
+        f = task.get_snapshot(-1)
+
+        assert f, "Failed to load snapshot"
+        filename = task.get_snapshot_filename(-1)
+        assert filename, "Failed to get filename"
 
     def test_download(self):
         for extension in ['tar', 'zip', 'tar.gz', 'tar.bz2']:
@@ -746,6 +789,50 @@ class BaseTestCreated(BaseViewsTestWithModel):
         for key in keys:
             assert key in rv.data, '"%s" not found in the response'
 
+    def test_inference_while_training(self):
+        # make sure we can do inference while all GPUs are in use for training
+        # if no GPUs, just test inference during a normal training job
+
+        # get number of GPUs
+        gpu_count = 1
+        if (config_value('gpu_list') and
+                config_value('caffe_root')['cuda_enabled'] and
+                config_value('caffe_root')['multi_gpu']):
+            gpu_count = len(config_value('gpu_list').split(','))
+
+        # grab an image for testing
+        category = self.imageset_paths.keys()[-1]
+        image_path = self.imageset_paths[category][-1]
+        image_path = os.path.join(self.imageset_folder, image_path)
+        with open(image_path,'rb') as infile:
+            # StringIO wrapping is needed to simulate POST file upload.
+            image_upload = (StringIO(infile.read()), 'image.png')
+
+        # create a long-running training job
+        job2_id = self.create_model(
+            select_gpu_count=gpu_count,
+            batch_size=10*gpu_count,
+            train_epochs=1000,
+        )
+        try:
+            while True:
+                status = self.model_status(job2_id)
+                if status in ['Initialized', 'Waiting']:
+                    time.sleep(0.01)
+                elif status == 'Running':
+                    break
+                else:
+                    raise RuntimeError('job status is %s' % status)
+
+            rv = self.app.post(
+                '/models/images/classification/classify_one.json?job_id=%s' % self.model_id,
+                data = {'image_file': image_upload}
+            )
+            data = json.loads(rv.data)
+            assert rv.status_code == 200, 'POST failed with %s' % rv.status_code
+        finally:
+            self.delete_model(job2_id)
+
 class BaseTestDatasetModelInteractions(BaseViewsTestWithDataset):
     """
     Test the interactions between datasets and models
@@ -819,6 +906,17 @@ class BaseTestCreatedTall(BaseTestCreated):
 
 class BaseTestCreatedCropInForm(BaseTestCreated):
     CROP_SIZE = 8
+
+class BaseTestCreatedDataAug(BaseTestCreatedTall):
+    AUG_FLIP = 'fliplrud'
+    AUG_QUAD_ROT = 'rotall'
+    AUG_ROT = 45
+    AUG_SCALE = 0.07
+    AUG_NOISE = 0.03
+    AUG_HSV_USE = True
+    AUG_HSV_H = 0.02
+    AUG_HSV_S = 0.04
+    AUG_HSV_V = 0.06
 
 class BaseTestCreatedCropInNetwork(BaseTestCreated):
     CAFFE_NETWORK = \
@@ -997,6 +1095,9 @@ class TestCaffeLeNet(BaseTestCreated):
 class TestTorchCreatedCropInForm(BaseTestCreatedCropInForm):
     FRAMEWORK = 'torch'
 
+class TestTorchCreatedDataAug(BaseTestCreatedDataAug):
+    FRAMEWORK = 'torch'
+
 class TestTorchCreatedCropInNetwork(BaseTestCreatedCropInNetwork):
     FRAMEWORK = 'torch'
 
@@ -1022,6 +1123,14 @@ class TestTorchLeNet(BaseTestCreated):
                 os.path.dirname(digits.__file__),
                 'standard-networks', 'torch', 'lenet.lua')
             ).read()
+
+    def test_inference_while_training(self):
+        # override parent method to skip this test as the reference
+        # model for LeNet uses CuDNN by default and it difficult to
+        # perform inference on a CuDNN-trained model without non-trivial
+        # model tweaking
+        raise unittest.SkipTest('Torch CPU inference on CuDNN-trained model not supported')
+
 
 class TestTorchLeNetHdf5Shuffle(TestTorchLeNet):
     BACKEND = 'hdf5'

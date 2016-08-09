@@ -147,9 +147,11 @@ class LmdbWriter(DbWriter):
         datums = []
         for (feature, label) in batch:
             # restrict features to 3D data (Caffe Datum objects)
-            assert feature.ndim == 3, "LMDB/Caffe expect 3D data"
+            if feature.ndim != 3:
+                raise ValueError("LMDB/Caffe expect 3D data - ndim=%d" % feature.ndim)
             # restrict labels to 3D data (Caffe Datum objects) or scalars
-            assert label.ndim == 3 or label.size == 1, "LMDB/Caffe expect 3D or scalar label"
+            if not (label.ndim == 3 or label.size == 1):
+                raise ValueError("LMDB/Caffe expect 3D or scalar label - ndim=%d" % label.ndim)
             if label.size > 1:
                 label_datum = self.array_to_datum(
                     label,
@@ -198,8 +200,6 @@ class LmdbWriter(DbWriter):
             # double the map_size
             curr_limit = db.info()['map_size']
             new_limit = curr_limit*2
-            logger.info(
-                'Doubling LMDB map size to %sMB ...' % (new_limit >> 20,))
             try:
                 db.set_mapsize(new_limit)  # double it
             except AttributeError as e:
@@ -213,7 +213,7 @@ class LmdbWriter(DbWriter):
 
 
 class Encoder(threading.Thread):
-    def __init__(self, queue, writer, extension, error_queue):
+    def __init__(self, queue, writer, extension, error_queue, force_same_shape):
         self.extension = extension
         self.queue = queue
         self.writer = writer
@@ -222,6 +222,7 @@ class Encoder(threading.Thread):
         self.feature_sum = None
         self.processed_count = 0
         self.error_queue = error_queue
+        self.force_same_shape = force_same_shape
         threading.Thread.__init__(self)
 
     def run(self):
@@ -244,16 +245,17 @@ class Encoder(threading.Thread):
                     # check feature and label shapes
                     if self.feature_shape is None:
                         self.feature_shape = feature.shape
-                        self.feature_sum = np.zeros(self.feature_shape, np.float64)
-                    else:
-                        assert self.feature_shape == feature.shape
                     if self.label_shape is None:
                         self.label_shape = label.shape
-                    else:
-                        assert self.label_shape == label.shape
-
-                    # accumulate sum for mean file calculation
-                    self.feature_sum += feature
+                    if self.force_same_shape:
+                        if self.feature_shape != feature.shape:
+                            raise ValueError("Feature shape mismatch (last:%s, previous:%s)" % (repr(feature.shape), repr(self.feature_shape)))
+                        if self.label_shape != label.shape:
+                            raise ValueError("Label shape mismatch (last:%s, previous:%s)" % (repr(label.shape), repr(self.label_shape)))
+                        if self.feature_sum is None:
+                            self.feature_sum = np.zeros(self.feature_shape, dtype=np.float64)
+                        # accumulate sum for mean file calculation
+                        self.feature_sum += feature
 
                     # aggregate data
                     data.append((feature, label))
@@ -269,7 +271,15 @@ class Encoder(threading.Thread):
 
 class DbCreator(object):
 
-    def create_db(self, extension, stage, dataset_dir, batch_size, num_threads, feature_encoding, label_encoding):
+    def create_db(self,
+                  extension,
+                  stage,
+                  dataset_dir,
+                  batch_size,
+                  num_threads,
+                  feature_encoding,
+                  label_encoding,
+                  force_same_shape):
         # retrieve itemized list of entries
         entry_ids = extension.itemize_entries(stage)
         entry_count = len(entry_ids)
@@ -304,7 +314,7 @@ class DbCreator(object):
             # create encoder threads
             encoders = []
             for _ in xrange(num_threads):
-                encoder = Encoder(encoder_queue, writer, extension, error_queue)
+                encoder = Encoder(encoder_queue, writer, extension, error_queue, force_same_shape)
                 encoder.daemon = True
                 encoder.start()
                 encoders.append(encoder)
@@ -316,20 +326,27 @@ class DbCreator(object):
             label_shape = None
             for encoder in encoders:
                 encoder.join()
-                if feature_sum is None:
-                    feature_sum = encoder.feature_sum
-                elif encoder.feature_sum is not None:
-                    feature_sum += encoder.feature_sum
+                # catch errors that may have occurred in reader thread
+                if not error_queue.empty():
+                    while not error_queue.empty():
+                        err = error_queue.get()
+                        logger.error(err)
+                    raise Exception(err)
                 if feature_shape is None:
                     feature_shape = encoder.feature_shape
                     logger.info('Feature shape for stage %s: %s' % (stage, repr(feature_shape)))
-                elif encoder.feature_shape is not None:
-                    assert feature_shape == encoder.feature_shape
                 if label_shape is None:
                     label_shape = encoder.label_shape
                     logger.info('Label shape for stage %s: %s' % (stage, repr(label_shape)))
-                elif encoder.label_shape is not None:
-                    assert label_shape == encoder.label_shape
+                if force_same_shape:
+                    if encoder.feature_shape and feature_shape != encoder.feature_shape:
+                        raise ValueError("Feature shape mismatch (last:%s, previous:%s)" % (repr(feature_shape), repr(encoder.feature_shape)))
+                    if encoder.label_shape and label_shape != encoder.label_shape:
+                        raise ValueError("Label shape mismatch (last:%s, previous:%s)" % (repr(label_shape), repr(encoder.label_shape)))
+                    if feature_sum is None:
+                        feature_sum = encoder.feature_sum
+                    elif encoder.feature_sum is not None:
+                        feature_sum += encoder.feature_sum
                 processed_count += encoder.processed_count
 
             # write mean file
@@ -339,13 +356,6 @@ class DbCreator(object):
             # wait for writer thread to complete
             writer.set_done()
             writer.join()
-
-            # catch errors that may have occurred in reader threads
-            if not error_queue.empty():
-                while not error_queue.empty():
-                    err = error_queue.get()
-                    logger.error(err)
-                raise Exception(err)
 
             if processed_count != entry_count:
                 # TODO: handle this more gracefully
@@ -392,7 +402,8 @@ def create_generic_db(jobs_dir, dataset_id, stage):
 
     # load dataset job
     dataset_dir = os.path.join(jobs_dir, dataset_id)
-    assert os.path.isdir(dataset_dir), "Dataset dir %s does not exist" % dataset_dir
+    if not os.path.isdir(dataset_dir):
+        raise IOError("Dataset dir %s does not exist" % dataset_dir)
     dataset = Job.load(dataset_dir)
 
     # create instance of extension
@@ -407,6 +418,8 @@ def create_generic_db(jobs_dir, dataset_id, stage):
     batch_size = dataset.batch_size
     num_threads = dataset.num_threads
 
+    force_same_shape = dataset.force_same_shape
+
     # create main DB creator object and execute main method
     db_creator = DbCreator()
     db_creator.create_db(
@@ -416,7 +429,8 @@ def create_generic_db(jobs_dir, dataset_id, stage):
         batch_size,
         num_threads,
         feature_encoding,
-        label_encoding)
+        label_encoding,
+        force_same_shape)
 
     logger.info('Generic DB creation Done')
 

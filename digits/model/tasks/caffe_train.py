@@ -29,13 +29,58 @@ import caffe
 import caffe_pb2
 
 # NOTE: Increment this everytime the pickled object changes
-PICKLE_VERSION = 3
+PICKLE_VERSION = 4
 
 # Constants
 CAFFE_SOLVER_FILE = 'solver.prototxt'
+CAFFE_ORIGINAL_FILE = 'original.prototxt'
 CAFFE_TRAIN_VAL_FILE = 'train_val.prototxt'
 CAFFE_SNAPSHOT_PREFIX = 'snapshot'
 CAFFE_DEPLOY_FILE = 'deploy.prototxt'
+
+@subclass
+class DigitsTransformer(caffe.io.Transformer):
+    """
+    A subclass of caffe.io.Transformer (an old-style class)
+    Handles cases when we don't want to resize inputs
+    """
+    def __init__(self, resize, **kwargs):
+        """
+        Arguments:
+        resize -- whether to resize inputs to the network default
+        """
+        self.resize = resize
+        caffe.io.Transformer.__init__(self, **kwargs)
+
+    def preprocess(self, in_, data):
+        """
+        Preprocess an image
+        See parent class for details
+        """
+        if not self.resize:
+            # update target input dimension such that no resize occurs
+            self.inputs[in_] = self.inputs[in_][:2] + data.shape[:2]
+            # do we have a mean?
+            if in_ in self.mean:
+                # resize mean if necessary
+                if self.mean[in_].size > 1:
+                    # we are doing mean image subtraction
+                    if self.mean[in_].size != data.size:
+                        # mean image size is different from data size
+                        # => we need to resize the mean image
+                        transpose = self.transpose.get(in_)
+                        if transpose is not None:
+                            # detranspose
+                            self.mean[in_] = self.mean[in_].transpose(
+                                np.argsort(transpose))
+                        self.mean[in_] = caffe.io.resize_image(
+                            self.mean[in_],
+                            data.shape[:2])
+                        if transpose is not None:
+                            # retranspose
+                            self.mean[in_] = self.mean[in_].transpose(transpose)
+        return caffe.io.Transformer.preprocess(self, in_, data)
+
 
 @subclass
 class Error(Exception):
@@ -83,10 +128,15 @@ class CaffeTrainTask(TrainTask):
         self.solver = None
 
         self.solver_file = CAFFE_SOLVER_FILE
+        self.original_file = CAFFE_ORIGINAL_FILE
         self.train_val_file = CAFFE_TRAIN_VAL_FILE
         self.snapshot_prefix = CAFFE_SNAPSHOT_PREFIX
         self.deploy_file = CAFFE_DEPLOY_FILE
         self.log_file = self.CAFFE_LOG
+
+        self.digits_version = digits.__version__
+        self.caffe_version  = config_value('caffe_root')['ver_str']
+        self.caffe_flavor   = config_value('caffe_root')['flavor']
 
     def __getstate__(self):
         state = super(CaffeTrainTask, self).__getstate__()
@@ -113,6 +163,27 @@ class CaffeTrainTask(TrainTask):
             else:
                 self.log_file = None
             self.framework_id = 'caffe'
+        if state['pickver_task_caffe_train'] <= 3:
+            try:
+                import caffe.proto.caffe_pb2
+                if isinstance(self.network, caffe.proto.caffe_pb2.NetParameter):
+                    # Convert from NetParameter to string back to NetParameter
+                    #   to avoid this error:
+                    # TypeError: Parameter to MergeFrom() must be instance of
+                    #   same class: expected caffe_pb2.NetParameter got
+                    #   caffe.proto.caffe_pb2.NetParameter.
+                    fixed = caffe_pb2.NetParameter()
+                    text_format.Merge(
+                        text_format.MessageToString(self.network),
+                        fixed,
+                    )
+                    self.network = fixed
+            except ImportError:
+                # If caffe.proto.caffe_pb2 can't be imported, then you're
+                # probably on a platform where that was never possible.
+                # So you can't need this upgrade and we can ignore the error.
+                pass
+
         self.pickver_task_caffe_train = PICKLE_VERSION
 
         # Make changes to self
@@ -228,6 +299,10 @@ class CaffeTrainTask(TrainTask):
         """
         Save solver, train_val and deploy files to disk
         """
+        # Save the origin network to file:
+        with open(self.path(self.original_file), 'w') as outfile:
+            text_format.PrintMessage(self.network, outfile)
+
         network = cleanedUpClassificationNetwork(self.network, len(self.get_labels()))
         data_layers, train_val_layers, deploy_layers = filterLayersByState(network)
 
@@ -523,6 +598,10 @@ class CaffeTrainTask(TrainTask):
 
         assert train_feature_db_path is not None, 'Training images are required'
 
+        # Save the origin network to file:
+        with open(self.path(self.original_file), 'w') as outfile:
+            text_format.PrintMessage(self.network, outfile)
+
         ### Split up train_val and deploy layers
 
         network = cleanedUpGenericNetwork(self.network)
@@ -596,8 +675,9 @@ class CaffeTrainTask(TrainTask):
         # network sanity checks
         self.logger.debug("Network sanity check - train")
         CaffeTrainTask.net_sanity_check(train_val_network, caffe_pb2.TRAIN)
-        self.logger.debug("Network sanity check - val")
-        CaffeTrainTask.net_sanity_check(train_val_network, caffe_pb2.TEST)
+        if val_image_data_layer is not None:
+            self.logger.debug("Network sanity check - val")
+            CaffeTrainTask.net_sanity_check(train_val_network, caffe_pb2.TEST)
 
         ### Write deploy file
 
@@ -835,7 +915,7 @@ class CaffeTrainTask(TrainTask):
                 else:
                     raise ValueError('Unknown flavor.  Support NVIDIA and BVLC flavors only.')
         if self.pretrained_model:
-            args.append('--weights=%s' % ','.join(map(lambda x: self.path(x), self.pretrained_model.split(':'))))
+            args.append('--weights=%s' % ','.join(map(lambda x: self.path(x), self.pretrained_model.split(os.path.pathsep))))
         return args
 
 
@@ -843,26 +923,42 @@ class CaffeTrainTask(TrainTask):
         """
         Helper to generate pycaffe Python script
         Returns a list of strings
+        Throws ValueError if self.solver_type is not recognized
 
         Arguments:
         gpu_id -- the GPU device id to use
         """
         # TODO: Remove this once caffe.exe works fine with Python Layer
-        gpu_script = "caffe.set_device({id});".format(id=gpu_id) if gpu_id else ""
-        if self.pretrained_model:
-            weight_files = ','.join(map(lambda x: self.path(x), self.pretrained_model.split(':')))
-            loading_script = "solv.net.copy_from('{weight}');".format(weight=weight_files)
+        solver_type_mapping = {
+            'ADADELTA': 'AdaDeltaSolver',
+            'ADAGRAD' : 'AdaGradSolver',
+            'ADAM'    : 'AdamSolver',
+            'NESTEROV': 'NesterovSolver',
+            'RMSPROP' : 'RMSPropSolver',
+            'SGD'     : 'SGDSolver'}
+        try:
+            solver_type = solver_type_mapping[self.solver_type]
+        except KeyError:
+            raise ValueError("Unknown solver type {}.".format(self.solver_type))
+        if gpu_id is not None:
+            gpu_script = "caffe.set_device({id});caffe.set_mode_gpu();".format(id=gpu_id)
         else:
-            loading_script = ""
+            gpu_script = "caffe.set_mode_cpu();"
+        loading_script = ""
+        if self.pretrained_model:
+            weight_files = map(lambda x: self.path(x), self.pretrained_model.split(os.path.pathsep))
+            for weight_file in weight_files:
+                loading_script = loading_script + "solv.net.copy_from('{weight}');".format(weight=weight_file)
         command_script =\
             "import caffe;" \
             "{gpu_script}" \
-            "solv=caffe.{solver_type}Solver('{solver_file}');" \
+            "solv=caffe.{solver}('{solver_file}');" \
             "{loading_script}" \
             "solv.solve()" \
-            .format(gpu_script=gpu_script, solver_type=self.solver_type,
+            .format(gpu_script=gpu_script,
+                    solver=solver_type,
                     solver_file = self.solver_file, loading_script=loading_script)
-        args = ['python -c '+ '\"' + command_script + '\"']
+        args = [sys.executable + ' -c '+ '\"' + command_script + '\"']
         return args
 
     @override
@@ -1014,6 +1110,41 @@ class CaffeTrainTask(TrainTask):
     ### TrainTask overrides
 
     @override
+    def get_task_stats(self,epoch=-1):
+        """
+        return a dictionary of task statistics
+        """
+
+        loc, mean_file = os.path.split(self.dataset.get_mean_file())
+
+        stats = {
+            "image dimensions": self.dataset.get_feature_dims(),
+            "mean file": mean_file,
+            "snapshot file": self.get_snapshot_filename(epoch),
+            "solver file": self.solver_file,
+            "train_val file": self.train_val_file,
+            "deploy file": self.deploy_file,
+            "framework": "caffe"
+        }
+
+        # These attributes only available in more recent jobs:
+        if hasattr(self,"original_file"):
+            stats.update({
+                "caffe flavor": self.caffe_flavor,
+                "caffe version": self.caffe_version,
+                "network file": self.original_file,
+                "digits version": self.digits_version
+            })
+
+        if hasattr(self.dataset,"resize_mode"):
+            stats.update({"image resize mode": self.dataset.resize_mode})
+
+        if hasattr(self.dataset,"labels_file"):
+            stats.update({"labels file": self.dataset.labels_file})
+
+        return stats
+
+    @override
     def detect_snapshots(self):
         self.snapshots = []
 
@@ -1069,14 +1200,25 @@ class CaffeTrainTask(TrainTask):
         return False
 
     @override
-    def infer_one(self, data, snapshot_epoch=None, layers=None, gpu=None):
+    def infer_one(self,
+                  data,
+                  snapshot_epoch=None,
+                  layers=None,
+                  gpu=None,
+                  resize=True):
         return self.infer_one_image(data,
                 snapshot_epoch=snapshot_epoch,
                 layers=layers,
                 gpu=gpu,
+                resize=resize
                 )
 
-    def infer_one_image(self, image, snapshot_epoch=None, layers=None, gpu=None):
+    def infer_one_image(self,
+                        image,
+                        snapshot_epoch=None,
+                        layers=None,
+                        gpu=None,
+                        resize=True):
         """
         Run inference on one image for a generic model
         Returns (output, visualizations)
@@ -1096,7 +1238,8 @@ class CaffeTrainTask(TrainTask):
         # process image
         if image.ndim == 2:
             image = image[:,:,np.newaxis]
-        preprocessed = self.get_transformer().preprocess(
+
+        preprocessed = self.get_transformer(resize).preprocess(
                 'data', image)
 
         # reshape net input (if necessary)
@@ -1228,10 +1371,21 @@ class CaffeTrainTask(TrainTask):
         return (mean, std, [y, x, ticks])
 
     @override
-    def infer_many(self, data, snapshot_epoch=None, gpu=None):
-        return self.infer_many_images(data, snapshot_epoch=snapshot_epoch, gpu=gpu)
+    def infer_many(self,
+                   data,
+                   snapshot_epoch=None,
+                   gpu=None,
+                   resize=True):
+        return self.infer_many_images(data,
+                                      snapshot_epoch=snapshot_epoch,
+                                      gpu=gpu,
+                                      resize=resize)
 
-    def infer_many_images(self, images, snapshot_epoch=None, gpu=None):
+    def infer_many_images(self,
+                          images,
+                          snapshot_epoch=None,
+                          gpu=None,
+                          resize=True):
         """
         Returns a list of OrderedDict, one for each image
 
@@ -1250,7 +1404,7 @@ class CaffeTrainTask(TrainTask):
             else:
                 caffe_images.append(image)
 
-        data_shape = tuple(self.get_transformer().inputs['data'])[1:]
+        data_shape = tuple(self.get_transformer(resize).inputs['data'])[1:]
 
         if self.batch_size:
             data_shape = (self.batch_size,) + data_shape
@@ -1264,7 +1418,7 @@ class CaffeTrainTask(TrainTask):
             if net.blobs['data'].data.shape != new_shape:
                 net.blobs['data'].reshape(*new_shape)
             for index, image in enumerate(chunk):
-                net.blobs['data'].data[index] = self.get_transformer().preprocess(
+                net.blobs['data'].data[index] = self.get_transformer(resize).preprocess(
                         'data', image)
             o = net.forward()
 
@@ -1289,7 +1443,7 @@ class CaffeTrainTask(TrainTask):
         """
         return len(self.snapshots) > 0
 
-    def get_net(self, epoch=None, gpu=-1):
+    def get_net(self, epoch=None, gpu=None):
         """
         Returns an instance of caffe.Net
 
@@ -1299,18 +1453,7 @@ class CaffeTrainTask(TrainTask):
         if not self.has_model():
             return False
 
-        file_to_load = None
-
-        if not epoch:
-            epoch = self.snapshots[-1][1]
-            file_to_load = self.snapshots[-1][0]
-        else:
-            for snapshot_file, snapshot_epoch in self.snapshots:
-                if snapshot_epoch == epoch:
-                    file_to_load = snapshot_file
-                    break
-        if file_to_load is None:
-            raise Exception('snapshot not found for epoch "%s"' % epoch)
+        file_to_load = self.get_snapshot(epoch)
 
         # check if already loaded
         if self.loaded_snapshot_file and self.loaded_snapshot_file == file_to_load \
@@ -1345,9 +1488,11 @@ class CaffeTrainTask(TrainTask):
 
         return self._caffe_net
 
-    def get_transformer(self):
+    def get_transformer(self, resize=True):
         """
-        Returns an instance of caffe.io.Transformer
+        Returns an instance of DigitsTransformer
+        Parameters:
+        - resize_shape: specify shape of network (or None for network default)
         """
         # check if already loaded
         if hasattr(self, '_transformer') and self._transformer is not None:
@@ -1377,9 +1522,10 @@ class CaffeTrainTask(TrainTask):
             elif self.use_mean == 'image':
                 mean_image = self.get_mean_image(self.dataset.path(self.dataset.get_mean_file()), True)
 
-        t = caffe.io.Transformer(
-                inputs = {'data': tuple(data_shape)}
-                )
+        t = DigitsTransformer(
+            inputs={'data': tuple(data_shape)},
+            resize=resize
+            )
 
         # transpose to (channels, height, width)
         t.set_transpose('data', (2,0,1))
@@ -1404,11 +1550,14 @@ class CaffeTrainTask(TrainTask):
         """
         return paths to model files
         """
-        return {
+        model_files = {
                 "Solver": self.solver_file,
                 "Network (train/val)": self.train_val_file,
                 "Network (deploy)": self.deploy_file
             }
+        if hasattr(self,"original_file"):
+            model_files.update({"Network (original)": self.original_file})
+        return model_files
 
     @override
     def get_network_desc(self):

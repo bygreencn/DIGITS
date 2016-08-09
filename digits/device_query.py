@@ -73,9 +73,11 @@ class c_cudaDeviceProp(ctypes.Structure):
             ('managedMemSupported', ctypes.c_int),
             ('isMultiGpuBoard', ctypes.c_int),
             ('multiGpuBoardGroupID', ctypes.c_int),
+            # Extra space for new fields in future toolkits
+            ('__future_buffer', ctypes.c_int * 128),
             # added later with cudart.cudaDeviceGetPCIBusId
             # (needed by NVML)
-            ('pciBusID_str', ctypes.c_char * 13),
+            ('pciBusID_str', ctypes.c_char * 16),
             ]
 
 class struct_c_nvmlDevice_t(ctypes.Structure):
@@ -93,6 +95,8 @@ class c_nvmlMemory_t(ctypes.Structure):
             ('total', ctypes.c_ulonglong),
             ('free', ctypes.c_ulonglong),
             ('used', ctypes.c_ulonglong),
+            # Extra space for new fields in future toolkits
+            ('__future_buffer', ctypes.c_ulonglong * 8),
             ]
 
 class c_nvmlUtilization_t(ctypes.Structure):
@@ -102,6 +106,8 @@ class c_nvmlUtilization_t(ctypes.Structure):
     _fields_ = [
             ('gpu', ctypes.c_uint),
             ('memory', ctypes.c_uint),
+            # Extra space for new fields in future toolkits
+            ('__future_buffer', ctypes.c_uint * 8),
             ]
 
 def get_library(name):
@@ -128,14 +134,12 @@ def get_cudart():
             if cudart is not None:
                 return cudart
     else:
-        for name in (
-                'libcudart.so.7.0',
-                'libcudart.so.7.5',
-                'libcudart.so.8.0',
-                'libcudart.so'):
-            cudart = get_library(name)
-            if cudart is not None:
-                return cudart
+        for major in xrange(9,5,-1):
+            for minor in (5,0):
+                cudart = get_library('libcudart.so.%d.%d' % (major, minor))
+                if cudart is not None:
+                    return cudart
+        return get_library('libcudart.so')
     return None
 
 def get_nvml():
@@ -186,19 +190,24 @@ def get_devices(force_reload=False):
 
     # get number of devices
     num_devices = ctypes.c_int()
-    cudart.cudaGetDeviceCount(ctypes.byref(num_devices))
+    rc = cudart.cudaGetDeviceCount(ctypes.byref(num_devices))
+    if rc != 0:
+        print 'cudaGetDeviceCount() failed with error #%s' % rc
+        return []
 
     # query devices
     for x in xrange(num_devices.value):
         properties = c_cudaDeviceProp()
         rc = cudart.cudaGetDeviceProperties(ctypes.byref(properties), x)
         if rc == 0:
-            pciBusID_str = ' ' * 13
+            pciBusID_str = ' ' * 16
             # also save the string representation of the PCI bus ID
-            rc = cudart.cudaDeviceGetPCIBusId(ctypes.c_char_p(pciBusID_str), 13, x)
+            rc = cudart.cudaDeviceGetPCIBusId(ctypes.c_char_p(pciBusID_str), 16, x)
             if rc == 0:
                 properties.pciBusID_str = pciBusID_str
             devices.append(properties)
+        else:
+            print 'cudaGetDeviceProperties() failed with error #%s' % rc
         del properties
     return devices
 
@@ -230,7 +239,7 @@ def get_nvml_info(device_id):
         handle = c_nvmlDevice_t()
         rc = nvml.nvmlDeviceGetHandleByPciBusId(ctypes.c_char_p(device.pciBusID_str), ctypes.byref(handle))
         if rc != 0:
-            raise RuntimeError('nvmlDeviceGetHandleByIndex() failed with error #%s' % rc)
+            raise RuntimeError('nvmlDeviceGetHandleByPciBusId() failed with error #%s' % rc)
 
         # Grab info for this device from NVML
         info = {}
@@ -276,6 +285,8 @@ if __name__ == '__main__':
         print 'Device #%d:' % i
         print '>>> CUDA attributes:'
         for name, t in device._fields_:
+            if name in ['__future_buffer']:
+                continue
             if not args.verbose and name not in [
                     'name', 'totalGlobalMem', 'clockRate', 'major', 'minor',]:
                 continue

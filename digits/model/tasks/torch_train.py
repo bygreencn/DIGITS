@@ -64,6 +64,8 @@ class TorchTrainTask(TrainTask):
         self.snapshot_prefix = TORCH_SNAPSHOT_PREFIX
         self.log_file = self.TORCH_LOG
 
+        self.digits_version = digits.__version__
+
     def __getstate__(self):
         state = super(TorchTrainTask, self).__getstate__()
 
@@ -250,7 +252,35 @@ class TorchTrainTask(TrainTask):
             args.append('--type=float')
 
         if self.pretrained_model:
-            args.append('--weights=%s' % self.path(self.pretrained_model))
+            filenames = self.pretrained_model.split(os.path.pathsep)
+            if len(filenames) > 1:
+                raise ValueError('Torch does not support multiple pretrained model files')
+            args.append('--weights=%s' % self.path(filenames[0]))
+
+        # Augmentations
+        assert self.data_aug['flip'] in ['none', 'fliplr', 'flipud', 'fliplrud'], 'Bad or unknown flag "flip"'
+        args.append('--augFlip=%s' % self.data_aug['flip'])
+
+        assert self.data_aug['quad_rot'] in ['none', 'rot90', 'rot180', 'rotall'], 'Bad or unknown flag "quad_rot"'
+        args.append('--augQuadRot=%s' % self.data_aug['quad_rot'])
+
+        if self.data_aug['rot']:
+            args.append('--augRot=%s' % self.data_aug['rot'])
+
+        if self.data_aug['scale']:
+            args.append('--augScale=%s' % self.data_aug['scale'])
+
+        if self.data_aug['noise']:
+            args.append('--augNoise=%s' % self.data_aug['noise'])
+
+        if self.data_aug['hsv_use']:
+            args.append('--augHSVh=%s' % self.data_aug['hsv_h'])
+            args.append('--augHSVs=%s' % self.data_aug['hsv_s'])
+            args.append('--augHSVv=%s' % self.data_aug['hsv_v'])
+        else:
+            args.append('--augHSVh=0')
+            args.append('--augHSVs=0')
+            args.append('--augHSVv=0')
 
         return args
 
@@ -460,12 +490,17 @@ class TorchTrainTask(TrainTask):
         return None
 
     @override
-    def infer_one(self, data, snapshot_epoch=None, layers=None, gpu=None):
+    def infer_one(self,
+                  data,
+                  snapshot_epoch=None,
+                  layers=None,
+                  gpu=None,
+                  resize=True):
+        # resize parameter is unused
         return self.infer_one_image(data,
-                snapshot_epoch=snapshot_epoch,
-                layers=layers,
-                gpu=gpu,
-                )
+                                    snapshot_epoch=snapshot_epoch,
+                                    layers=layers,
+                                    gpu=gpu)
 
     def infer_one_image(self, image, snapshot_epoch=None, layers=None, gpu=None):
         """
@@ -754,7 +789,8 @@ class TorchTrainTask(TrainTask):
         return True           # control never reach this line. It can be removed.
 
     @override
-    def infer_many(self, data, snapshot_epoch=None, gpu=None):
+    def infer_many(self, data, snapshot_epoch=None, gpu=None, resize=True):
+        # resize parameter is unused
         return self.infer_many_images(data, snapshot_epoch=snapshot_epoch, gpu=gpu)
 
     def infer_many_images(self, images, snapshot_epoch=None, gpu=None):
@@ -923,23 +959,29 @@ class TorchTrainTask(TrainTask):
             desc = infile.read()
         return desc
 
-    def get_snapshot(self, epoch):
+    @override
+    def get_task_stats(self,epoch=-1):
         """
-        return snapshot file for specified epoch
+        return a dictionary of task statistics
         """
-        file_to_load = None
 
-        if not epoch:
-            epoch = self.snapshots[-1][1]
-            file_to_load = self.snapshots[-1][0]
-        else:
-            for snapshot_file, snapshot_epoch in self.snapshots:
-                if snapshot_epoch == epoch:
-                    file_to_load = snapshot_file
-                    break
-        if file_to_load is None:
-            raise Exception('snapshot not found for epoch "%s"' % epoch)
+        loc, mean_file = os.path.split(self.dataset.get_mean_file())
 
-        return file_to_load
+        stats = {
+            "image dimensions": self.dataset.get_feature_dims(),
+            "mean file": mean_file,
+            "snapshot file": self.get_snapshot_filename(epoch),
+            "model file": self.model_file,
+            "framework": "torch"
+        }
 
+        if hasattr(self,"digits_version"):
+            stats.update({"digits version": self.digits_version})
 
+        if hasattr(self.dataset,"resize_mode"):
+            stats.update({"image resize mode": self.dataset.resize_mode})
+
+        if hasattr(self.dataset,"labels_file"):
+            stats.update({"labels file": self.dataset.labels_file})
+
+        return stats

@@ -15,7 +15,6 @@ env:
         - CAFFE_FORK=NVIDIA CAFFE_BRANCH=caffe-0.14
 
 cache:
-    timeout: 604800  # 1 week
     apt: true
     directories:
         - ~/caffe
@@ -35,6 +34,9 @@ before_install:
 install:
     # apt packages
     - ./scripts/travis/install-apt.sh
+
+    # bust build caches
+    - ./scripts/travis/bust-cache.sh ~/caffe ~/torch
 
     # build caffe
     - ./scripts/travis/install-caffe.sh ~/caffe
