@@ -1,5 +1,15 @@
 # Build DIGITS on Windows
 
+## Limitation
+DIGITS for Windows depends on Windows branch of BVLC Caffe.
+The following layers, required for DetectNet feature, are not implemented in that branch.
+- detectnet_transform_layer
+- l1_loss_layer
+
+As a result, DIGITS for Windows does not support DetectNet.
+To run DIGITS with DetectNet, please use NV-Caffe 0.15 or above on Ubuntu.
+
+
 ## Prerequisites
 - Python2
 - CUDA 7.5
@@ -72,6 +82,15 @@ Then type
 python -m pip install -r requirements.txt
 ```
 
+You may see error about Pillow, like
+``` ValueError: jpeg is required unless explicitly disabled using --disable-jpeg, aborting ```
+If this happens, download Pillow Windows Installer (Pillow-3.1.1.win-amd64-py2.7.exe) at https://pypi.python.org/pypi/Pillow/3.1.1 and run the exectuables.
+After installing Pillow in the above way, run
+```
+python -m pip install -r requirements.txt
+```
+again.
+
 After the above command, check if all required Python dependencies are met by comparing requirements.txt and output of the following command.
 ```
 python -m pip list
@@ -129,4 +148,5 @@ except ImportError:
 
 ### DIGITS complains Torch binary not found in PATH
 
-Currently, DIGITS does not support Torch on Windows platform. 
+Currently, DIGITS does not support Torch on Windows platform.
+

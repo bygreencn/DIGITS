@@ -32,6 +32,14 @@ class VisualizationInterface(object):
         """
         raise NotImplementedError
 
+    @staticmethod
+    def get_default_visibility():
+        """
+        Return whether to show extension in GUI (can be overridden through
+        DIGITS configuration options)
+        """
+        return True
+
     def get_header_template(self):
         """
         This returns the content to be rendered at the top of the result
@@ -46,6 +54,32 @@ class VisualizationInterface(object):
           or None if there is no header to display
           - context is a dictionary of context variables to use for rendering
           the form
+        """
+        return None, None
+
+    def get_ng_templates(self):
+        """
+        This returns the angularjs content defining the app and maybe a
+        large scope controller. By default this method returns None,
+        an indication that there is no angular header. This method
+        may be overridden in sub-classes to implement the app and controller.
+
+        This header html protion will likely be of the form:
+        <script>
+        ...
+        </script>
+        <div ng-app="my_app">
+            <div ng-controller="my_controller">
+
+        and the footer needs to close any open divs:
+            </div>
+        </div>
+        Returns:
+        - (header, footer) tuple
+          - header is the html text defining the angular app and adding the ng-app div,
+          or None if there is no angular app defined
+          - footer is the html text closing any open divs from the header
+          or None if there is no angular app defined
         """
         return None, None
 
@@ -80,14 +114,14 @@ class VisualizationInterface(object):
 
     def process_data(
             self,
-            dataset,
+            input_id,
             input_data,
             inference_data,
             ground_truth=None):
         """
         Process one inference output
         Parameters:
-        - dataset: dataset used during training
+        - input_id: index of input sample
         - input_data: input to the network
         - inference_data: network output
         - ground_truth: Ground truth. Format is application specific.

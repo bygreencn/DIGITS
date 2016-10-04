@@ -2,32 +2,20 @@
 
 "use strict";
 
-//Array.prototype.contains = function(elem)
-//{
-//    return this.indexOf(elem) != -1;
-//}
-
-//Array.prototype.last = function() {
-//    return this[this.length - 1];
-//};
-
-//String.prototype.header = function() {
-//    // replace '_' with ' ' and capilize words unless there are
-//    // already capitalized letters such as in mAP.
-//    return this;
-//    return this.
-//        replace(/_/g, ' ').
-//        replace(/\w\S*/g, function(txt) {
-//            return (txt != txt.toLowerCase() ? txt :
-//                    txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
-//        });
-//};
-
+try {
 (function () {
-    var app = angular.module('home_app', ['ngStorage']);
+    var app = angular.module('home_app', ['ngStorage', 'ui.bootstrap'])
+        .filter('html',function($sce){
+        return function(input){
+            return $sce.trustAsHtml(input);
+        }
+    });
 
-    app.controller('tab_controller', function () {
-        this.tab = 2;
+    app.controller('tab_controller', function ($scope) {
+        var self = this;
+        $scope.init = function(tab){
+          self.tab = _.isUndefined(tab) ? 2 : tab;
+        };
 
         this.setTab = function(tabId, $event) {
             this.tab = tabId;
@@ -39,20 +27,26 @@
         };
     });
 
-    app.controller('all_jobs_controller', function($rootScope, $scope, $http) {
+    app.controller('all_jobs_controller', function($rootScope, $scope, $localStorage, $http) {
+        $scope.jobs = [];
+
+        this.storage = $localStorage.$default({
+            show_groups: true,
+        });
 
         $scope.add_job = function(job_id) {
             $http({
                 method : "GET",
                 url: '/jobs/' + job_id + '/table_data.json',
             }).then(function success(response) {
+                var job = response.data.job;
                 for (var i = 0; i < $scope.jobs.length; i++) {
                     if ($scope.jobs[i].id == job_id) {
-                        $scope.jobs[i] = Object.assign({}, response.data.job);
+                        $scope.jobs[i] = Object.assign({}, job);
                         return;
                     }
                 }
-                $scope.jobs.push(response.data.job);
+                $scope.jobs.push(job);
             });
         }
 
@@ -93,7 +87,9 @@
                     }
                 }
 
-                $scope.jobs = [].concat(response.data.running, response.data.datasets, response.data.models);
+
+                var r = response.data;
+                $scope.jobs = [].concat(r.running, r.datasets, r.models, r.pretrained_models);
 
                 var scope = angular.element(document.getElementById("models-table")).scope();
                 // scope.storage.model_output_fields = [];
@@ -132,6 +128,10 @@
             return (!$scope.is_running(job) && job.type == 'model');
         }
 
+        $scope.is_pretrained_model = function(job) {
+            return (!$scope.is_running(job) && job.type == 'pretrained_model');
+        }
+
         $scope.set_attribute = function(job_id, name, value) {
             for (var i = 0; i < $scope.jobs.length; i++) {
                 if ($scope.jobs[i].id == job_id) {
@@ -140,6 +140,10 @@
                 }
             }
             return false;
+        }
+
+        $scope.print = function(txt) {
+            console.log(txt);
         }
     });
 
@@ -319,10 +323,6 @@
         }
         $scope.jobs = [];
 
-        $scope.set_jobs = function(jobs) {
-            $scope.jobs = jobs;
-        }
-
         $scope.default_descending = function(active) {
             for (var i = 0; i < $scope.jobs.length; i++) {
                 if (typeof($scope.jobs[i][active]) == 'string') {
@@ -367,19 +367,27 @@
             return '';
         };
 
-        $scope.delete_jobs = function() {
+        $scope.get_selected_job_ids = function() {
             var job_ids = [];
-
-            for (var i = 0; i < $scope.jobs.length; i++) {
-                if ($scope.jobs[i].selected) {
+            for (var i = 0; i < $scope.jobs.length; i++)
+                if ($scope.jobs[i].selected)
                     job_ids.push($scope.jobs[i].id);
-                }
-            }
+            return job_ids;
+        }
 
-            var n_job_ids = job_ids.length;
+        $scope.get_group_for_job = function(job_id) {
+            for (var i = 0; i < $scope.jobs.length; i++)
+                if ($scope.jobs[i].id == job_id)
+                    return $scope.jobs[i].group ? $scope.jobs[i].group : '';
+            return '';
+        }
+
+        $scope.delete_jobs = function() {
+            var job_ids = $scope.get_selected_job_ids();
+            if (job_ids.length == 0) return;
             bootbox.confirm(
-                ('Are you sure you want to delete the ' +
-                 (n_job_ids == 1 ? 'selected job' : n_job_ids + ' selected jobs?') +
+                ('Are you sure you want to delete the selected' +
+                 (job_ids.length == 1 ? 'job?' : job_ids.length + ' jobs?') +
                  '<br><br>All related files will be permanently removed.'),
                 function(result) {
                     if (result)
@@ -402,18 +410,11 @@
         }
 
         $scope.abort_jobs = function() {
-            var job_ids = [];
-
-            for (var i = 0; i < $scope.jobs.length; i++) {
-                if ($scope.jobs[i].selected) {
-                    job_ids.push($scope.jobs[i].id);
-                }
-            }
-
-            var n_job_ids = job_ids.length;
+            var job_ids = $scope.get_selected_job_ids();
+            if (job_ids.length == 0) return;
             bootbox.confirm(
-                ('Are you sure you want to abort the ' +
-                 (n_job_ids == 1 ? 'selected job' : n_job_ids + ' selected jobs?')),
+                ('Are you sure you want to abort the selected ' +
+                 (job_ids.length == 1 ? 'job?' : job_ids.length + ' jobs?')),
                 function(result) {
                     if (result)
                         $.ajax('/abort_jobs',
@@ -434,6 +435,47 @@
             return false;
         }
 
+        $scope.group_jobs = function() {
+            var job_ids = $scope.get_selected_job_ids();
+            if (job_ids.length == 0) return;
+            var job_string = (job_ids.length == 1 ? 'job' : 'jobs');
+            var n_job_string = (job_ids.length == 1 ? '' : job_ids.length);
+            var default_group_name = $scope.get_group_for_job(job_ids[0]);
+            bootbox.prompt({
+                title: ('Enter a group name for the ' +
+                        n_job_string +
+                        ' selected ' +
+                        job_string + '.' +
+                        '<br><small>Leave the name blank to ungroup the ' +
+                        job_string + '.</small>'),
+                value: default_group_name,
+                callback: function(result) {
+                    if (result !== null) {
+                        // Case the user enters 'Ungrouped', change it to ''
+                        if (result == 'Ungrouped')
+                            result = '';
+                        $.ajax('/group',
+                               {
+                                   type: "POST",
+                                   data: {
+                                       'job_ids': job_ids,
+                                       group_name: result,
+                                   },
+                               })
+                            .done(function() {
+                                $scope.$apply();
+                            })
+                            .fail(function(data) {
+                                $scope.$apply();
+                                errorAlert(data);
+                            });
+                    }
+                }
+            });
+            return false;
+        }
+
+
         $scope.print_time_diff_ago = function(start) {
             return print_time_diff_ago(start, 'minute');
         }
@@ -448,10 +490,6 @@
 
         $scope.print_time_diff = function(diff) {
             return print_time_diff(diff);
-        }
-
-        $scope.print = function(txt) {
-            console.log(txt);
         }
 
         $scope.is_today = function(date) {
@@ -482,8 +520,8 @@
     app.controller('running_controller', function($scope, $controller) {
         $controller('job_controller', {$scope: $scope});
         $scope.title = 'Running Jobs';
-        $scope.fields = [{name: 'name',      show: true, min_width: 0},
-                         {name: 'submitted', show: true, min_width: 0},
+        $scope.fields = [{name: 'name',      show: true, min_width: 100},
+                         {name: 'submitted', show: true, min_width: 100},
                          {name: 'status',    show: true, min_width: 120},
                          {name: 'loss',      show: true, min_width: 200},
                          {name: 'progress',  show: true, min_width: 200}];
@@ -505,13 +543,25 @@
         $scope.title = 'Models';
         $scope.storage = $localStorage.$default({
             model_output_fields: [],
-            model_fields: [{name: 'name',      show: true,  min_width: 0},
+            model_fields: [{name: 'name',      show: true,  min_width: 100},
                            {name: 'id',        show: false, min_width: 200},
-                           {name: 'framework', show: true,  min_width: 0},
-                           {name: 'status',    show: true,  min_width: 0},
-                           {name: 'elapsed',   show: true,  min_width: 0},
-                           {name: 'submitted', show: true,  min_width: 0}],
+                           {name: 'framework', show: true,  min_width: 50},
+                           {name: 'status',    show: true,  min_width: 50},
+                           {name: 'elapsed',   show: true,  min_width: 50},
+                           {name: 'submitted', show: true,  min_width: 50}],
         });
+    });
+
+    app.controller('pretrained_models_controller', function($scope, $localStorage, $controller) {
+        $controller('job_controller', {$scope: $scope});
+        $scope.title = 'Models';
+        $scope.fields = [{name: 'name',         show: true,  min_width: 0},
+                         {name: 'framework',    show: true,  min_width: 0},
+                         {name: 'username',     show: true,  min_width: 0},
+                         {name: 'has_labels',   show: true,  min_width: 0},
+                         {name: 'status',       show: true,  min_width: 0},
+                         {name: 'elapsed',      show: true,  min_width: 0},
+                         {name: 'submitted',    show: true,  min_width: 0}];
     });
 
     function precision(input, sigfigs) {
@@ -538,23 +588,25 @@
 
     app.filter('major_name', function ($filter) {
         return function (input) {
-            return input.replace(/\s*\[.*\]/, '');
+            return input.replace(/(\w+:[\.\w]+[, \w:\.]*)$/, '');
         }
     });
 
     app.filter('minor_name', function ($filter) {
         return function (input) {
-            var match = input.match(/\s*\[(.*)\]/);
+            var match = input.match(/(\w+:[\.\w]+[, \w:\.]*)$/);
             return match ? match[0] : ''
         }
     });
 
     app.filter("sort_with_empty_at_end", function () {
-        return function (array, scope) {
+        return function (array, scope, show_groups) {
             if (!angular.isArray(array)) return;
             array.sort(
                 function(x, y)
                 {
+                    var xg = x.group;
+                    var yg = y.group;
                     var x1 = x[scope.sort.active1];
                     var y1 = y[scope.sort.active1];
                     var x2 = x[scope.sort.active2];
@@ -562,16 +614,22 @@
                     var d1 = scope.sort.descending1;
                     var d2 = scope.sort.descending2;
 
-                    if (x1 == y1) {
-                        if (x2 === undefined) return 1;
-                        if (y2 === undefined) return -1;
-                        return ((x2 < y2) ? d2 : (x2 > y2) ? -d2 : 0);
+                    if (show_groups && xg != yg) {
+                        if (xg === '') return 1;
+                        if (yg === '') return -1;
+                        return ((xg < yg) ? -1 : (xg > yg) ? 1 : 0);
                     }
-                    if (x1 === undefined) return 1;
-                    if (y1 === undefined) return -1;
-                    return ((x1 < y1) ? d1 : (x1 > y1) ? -d1 : 0);
+                    if (x1 != y1) {
+                        if (x1 === undefined) return 1;
+                        if (y1 === undefined) return -1;
+                        return ((x1 < y1) ? d1 : (x1 > y1) ? -d1 : 0);
+                    }
+                    if (x2 === undefined) return 1;
+                    if (y2 === undefined) return -1;
+                    return ((x2 < y2) ? d2 : (x2 > y2) ? -d2 : 0);
                 }
             );
+
             return array;
         };
     });
@@ -656,6 +714,17 @@
         };
     });
 
+    app.directive('dgHasLabels', function() {
+        console.log('has-labels');
+        return {
+            restrict: 'AE',
+            replace: true,
+            template: '<i class="glyphicon '+
+                ' {[job.has_labels ? \'glyphicon-ok\' : ' +
+                '\'glyphicon-remove\']}" style="width:14px"/>',
+        };
+    });
+
     // Because jinja uses {{ and }}, tell angular to use {[ and ]}
     app.config(['$interpolateProvider', function($interpolateProvider) {
         $interpolateProvider.startSymbol('{[');
@@ -663,6 +732,10 @@
     }]);
 
 })();
+}
+catch(ex) {
+    console.log(ex);
+}
 
 $(document).ready(function() {
 
@@ -719,6 +792,10 @@ $(document).ready(function() {
         }
         else if (msg.update == 'deleted') {
             scope.remove_job(msg.job_id);
+            scope.$apply();
+        }
+        else if (msg.update == 'attribute') {
+            scope.set_attribute(msg.job_id, msg.attribute, msg.value);
             scope.$apply();
         }
     });

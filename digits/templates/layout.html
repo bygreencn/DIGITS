@@ -2,6 +2,9 @@
 
 <!doctype html>
 <head>
+    <!-- For Internet Explorer -->
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+
     <link rel="icon" href="{{url_for('static', filename='images/nvidia.ico')}}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css', ver=dir_hash) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap-theme.min.css', ver=dir_hash) }}">
@@ -9,14 +12,15 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/c3.min.css', ver=dir_hash) }}">
     <title>{% block title %}DIGITS{% endblock %}</title>
 
-    <script src="{{ url_for('static', filename='js/jquery-1.11.1.min.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/bootstrap.min.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/bootbox.min.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/digits.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/d3.min.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/c3.min.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/jquery.autocomplete.min.js', ver=dir_hash) }}"></script>
-    <script src="{{ url_for('static', filename='js/file_field.js', ver=dir_hash) }}"></script>
+    <script src="{{ url_for('static', filename='js/jquery-1.11.1.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/bootstrap.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/bootbox.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/digits.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/d3.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/c3.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/jquery.autocomplete.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/file_field.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/underscore.min.js') }}"></script>
 
     <script src="{{ url_for('static', filename='js/ace/ace.js', ver=dir_hash) }}" type="text/javascript" charset="utf-8"></script>
     <script src="{{ url_for('static', filename='js/ace/mode-python.js', ver=dir_hash) }}" type="text/javascript" charset="utf-8"></script>
@@ -43,7 +47,7 @@
             {% else %}
             <a class="navbar-link" href="/login">Login</a>
             {% endif %}
-            <p>
+            </p>
             </li>
             <li class="dropdown">
             <a href="#" class="dropdown-toggle" data-toggle="dropdown">Info<span class="caret"></span></a>
@@ -52,9 +56,27 @@
                 <li><span class="navbar-text">Server: {{server_name}}</span></li>
                 {% endif %}
                 <li><span class="navbar-text">DIGITS version: <br> {{server_version}}</span></li>
-                <li><span class="navbar-text">Caffe version: <br> {{caffe_version}}</span><li>
-                <li><span class="navbar-text">Caffe flavor: <br> {{caffe_flavor}}</span><li>
+                <li><span class="navbar-text">Caffe version: <br> {{caffe_version}}</span></li>
+                <li><span class="navbar-text">Caffe flavor: <br> {{caffe_flavor}}</span></li>
             </ul>
+            </li>
+            <li class="dropdown">
+                <a href="#" class="dropdown-toggle" data-toggle="dropdown">About<span class="caret"></span></a>
+                <ul class="dropdown-menu about-menu navbar-inverse">
+                    <li><span class="navbar-text"><a target="_blank" href="https://developer.nvidia.com/digits">
+                        DIGITS on developer.nvidia.com
+                    </a></span></li>
+                    <li><span class="navbar-text"><a target="_blank" href="https://github.com/NVIDIA/DIGITS">
+                        DIGITS on GitHub
+                    </a></span></li>
+                    <li><span class="navbar-text"><a target="_blank" href="https://groups.google.com/d/forum/digits-users">
+                        DIGITS user group
+                    </a></span></li>
+                    <li><span class="navbar-text"><a href="mailto:digits@nvidia.com">
+                        digits@nvidia.com
+                    </a></span></li>
+                </ul>
+            </li>
         </ul>
     </div>
 </div>
@@ -64,6 +86,8 @@
     {% endblock %}
 </div>
 <script>
+$SCRIPT_ROOT = {{ request.script_root|tojson|safe }};
+
 $(".explanation-tooltip").tooltip();
 
 window.onload = function () {
@@ -85,5 +109,16 @@ window.onload = function () {
 
 </script>
 
+<style>
+ .about-menu {
+     width: 240px !important;
+ }
+ .brightness {
+     display: inline-block;
+ }
+ .brightness img:hover {
+     opacity: .75;
+ }
+</style>
 
 </body>

@@ -20,6 +20,7 @@ from .dataset import DatasetJob
 from .job import Job
 from .log import logger
 from .model import ModelJob
+from .pretrained_model import PretrainedModelJob
 from .status import Status
 from digits.utils import errors
 
@@ -142,9 +143,9 @@ class Scheduler:
                 except Exception as e:
                     failed_jobs.append((dir_name, e))
 
-        # add DatasetJobs
+        # add DatasetJobs or PretrainedModelJobs
         for job in loaded_jobs:
-            if isinstance(job, DatasetJob):
+            if isinstance(job, DatasetJob) or isinstance(job,PretrainedModelJob):
                 self.jobs[job.id()] = job
 
         # add ModelJobs
@@ -443,7 +444,7 @@ class Scheduler:
 
     def sigterm_handler(self, signal, frame):
         """
-        Gunicorn shuts down workers with SIGTERM, not SIGKILL
+        Catch SIGTERM in addition to SIGINT
         """
         self.shutdown.set()
 

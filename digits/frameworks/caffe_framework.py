@@ -34,13 +34,13 @@ class CaffeFramework(Framework):
     # whether this framework can shuffle data during training
     CAN_SHUFFLE_DATA = False
 
-    if config_value('caffe_root')['flavor'] == 'NVIDIA':
-        if config_value('caffe_root')['version'] > parse_version('0.14.0-alpha'):
+    if config_value('caffe')['flavor'] == 'NVIDIA':
+        if parse_version(config_value('caffe')['version']) > parse_version('0.14.0-alpha'):
             SUPPORTED_SOLVER_TYPES = ['SGD', 'NESTEROV', 'ADAGRAD',
                                       'RMSPROP', 'ADADELTA', 'ADAM']
         else:
             SUPPORTED_SOLVER_TYPES = ['SGD', 'NESTEROV', 'ADAGRAD']
-    elif config_value('caffe_root')['flavor'] == 'BVLC':
+    elif config_value('caffe')['flavor'] == 'BVLC':
         SUPPORTED_SOLVER_TYPES = ['SGD', 'NESTEROV', 'ADAGRAD',
                                   'RMSPROP', 'ADADELTA', 'ADAM']
     else:
@@ -119,6 +119,18 @@ class CaffeFramework(Framework):
         return network
 
     @override
+    def get_network_from_path(self, path):
+        """
+        return network object from a file path
+        """
+        network = caffe_pb2.NetParameter()
+
+        with open(path) as infile:
+            text_format.Merge(infile.read(), network)
+
+        return network
+
+    @override
     def get_network_visualization(self, desc):
         """
         return visualization of network
@@ -132,10 +144,11 @@ class CaffeFramework(Framework):
 
     @override
     def can_accumulate_gradients(self):
-        if config_value('caffe_root')['flavor'] == 'BVLC':
+        if config_value('caffe')['flavor'] == 'BVLC':
             return True
-        elif config_value('caffe_root')['flavor'] == 'NVIDIA':
-            return config_value('caffe_root')['version'] > parse_version('0.14.0-alpha')
+        elif config_value('caffe')['flavor'] == 'NVIDIA':
+            return (parse_version(config_value('caffe')['version'])
+                    > parse_version('0.14.0-alpha'))
         else:
             raise ValueError('Unknown flavor.  Support NVIDIA and BVLC flavors only.')
 

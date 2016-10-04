@@ -29,7 +29,7 @@ import caffe
 import caffe_pb2
 
 # NOTE: Increment this everytime the pickled object changes
-PICKLE_VERSION = 4
+PICKLE_VERSION = 5
 
 # Constants
 CAFFE_SOLVER_FILE = 'solver.prototxt'
@@ -128,15 +128,15 @@ class CaffeTrainTask(TrainTask):
         self.solver = None
 
         self.solver_file = CAFFE_SOLVER_FILE
-        self.original_file = CAFFE_ORIGINAL_FILE
+        self.model_file = CAFFE_ORIGINAL_FILE
         self.train_val_file = CAFFE_TRAIN_VAL_FILE
         self.snapshot_prefix = CAFFE_SNAPSHOT_PREFIX
         self.deploy_file = CAFFE_DEPLOY_FILE
         self.log_file = self.CAFFE_LOG
 
         self.digits_version = digits.__version__
-        self.caffe_version  = config_value('caffe_root')['ver_str']
-        self.caffe_flavor   = config_value('caffe_root')['flavor']
+        self.caffe_version  = config_value('caffe')['version']
+        self.caffe_flavor   = config_value('caffe')['flavor']
 
     def __getstate__(self):
         state = super(CaffeTrainTask, self).__getstate__()
@@ -183,6 +183,13 @@ class CaffeTrainTask(TrainTask):
                 # probably on a platform where that was never possible.
                 # So you can't need this upgrade and we can ignore the error.
                 pass
+
+        if state['pickver_task_caffe_train'] <= 4:
+            if hasattr(self,"original_file"):
+                self.model_file = self.original_file
+                del self.original_file
+            else:
+                self.model_file = None
 
         self.pickver_task_caffe_train = PICKLE_VERSION
 
@@ -300,7 +307,7 @@ class CaffeTrainTask(TrainTask):
         Save solver, train_val and deploy files to disk
         """
         # Save the origin network to file:
-        with open(self.path(self.original_file), 'w') as outfile:
+        with open(self.path(self.model_file), 'w') as outfile:
             text_format.PrintMessage(self.network, outfile)
 
         network = cleanedUpClassificationNetwork(self.network, len(self.get_labels()))
@@ -495,7 +502,7 @@ class CaffeTrainTask(TrainTask):
         solver.net = self.train_val_file
 
         # Set CPU/GPU mode
-        if config_value('caffe_root')['cuda_enabled'] and \
+        if config_value('caffe')['cuda_enabled'] and \
                 bool(config_value('gpu_list')):
             solver.solver_mode = caffe_pb2.SolverParameter.GPU
         else:
@@ -572,6 +579,10 @@ class CaffeTrainTask(TrainTask):
             solver.momentum = 0.9
         solver.weight_decay = solver.base_lr / 100.0
 
+        # solver specific values
+        if solver.solver_type == solver.RMSPROP:
+            solver.rms_decay = self.rms_decay
+
         # Display 8x per epoch, or once per 5000 images, whichever is more frequent
         solver.display = max(1, min(
                 int(math.floor(float(solver.max_iter) / (self.train_epochs * 8))),
@@ -599,7 +610,7 @@ class CaffeTrainTask(TrainTask):
         assert train_feature_db_path is not None, 'Training images are required'
 
         # Save the origin network to file:
-        with open(self.path(self.original_file), 'w') as outfile:
+        with open(self.path(self.model_file), 'w') as outfile:
             text_format.PrintMessage(self.network, outfile)
 
         ### Split up train_val and deploy layers
@@ -716,7 +727,7 @@ class CaffeTrainTask(TrainTask):
         solver.net = self.train_val_file
 
         # Set CPU/GPU mode
-        if config_value('caffe_root')['cuda_enabled'] and \
+        if config_value('caffe')['cuda_enabled'] and \
                 bool(config_value('gpu_list')):
             solver.solver_mode = caffe_pb2.SolverParameter.GPU
         else:
@@ -892,7 +903,7 @@ class CaffeTrainTask(TrainTask):
 
         # Not in Windows, or in Windows but no Python Layer
         # This is the normal path
-        args = [config_value('caffe_root')['executable'],
+        args = [config_value('caffe')['executable'],
                 'train',
                 '--solver=%s' % self.path(self.solver_file),
                 ]
@@ -904,13 +915,14 @@ class CaffeTrainTask(TrainTask):
             if len(identifiers) == 1:
                 args.append('--gpu=%s' % identifiers[0])
             elif len(identifiers) > 1:
-                if config_value('caffe_root')['flavor'] == 'NVIDIA':
-                    if config_value('caffe_root')['version'] < utils.parse_version('0.14.0-alpha'):
+                if config_value('caffe')['flavor'] == 'NVIDIA':
+                    if (utils.parse_version(config_value('caffe')['version'])
+                            < utils.parse_version('0.14.0-alpha')):
                         # Prior to version 0.14, NVcaffe used the --gpus switch
                         args.append('--gpus=%s' % ','.join(identifiers))
                     else:
                         args.append('--gpu=%s' % ','.join(identifiers))
-                elif config_value('caffe_root')['flavor'] == 'BVLC':
+                elif config_value('caffe')['flavor'] == 'BVLC':
                     args.append('--gpu=%s' % ','.join(identifiers))
                 else:
                     raise ValueError('Unknown flavor.  Support NVIDIA and BVLC flavors only.')
@@ -1128,13 +1140,14 @@ class CaffeTrainTask(TrainTask):
         }
 
         # These attributes only available in more recent jobs:
-        if hasattr(self,"original_file"):
-            stats.update({
-                "caffe flavor": self.caffe_flavor,
-                "caffe version": self.caffe_version,
-                "network file": self.original_file,
-                "digits version": self.digits_version
-            })
+        if hasattr(self,"model_file"):
+            if self.model_file is not None:
+                stats.update({
+                    "caffe flavor": self.caffe_flavor,
+                    "caffe version": self.caffe_version,
+                    "model file": self.model_file,
+                    "digits version": self.digits_version
+                })
 
         if hasattr(self.dataset,"resize_mode"):
             stats.update({"image resize mode": self.dataset.resize_mode})
@@ -1555,8 +1568,9 @@ class CaffeTrainTask(TrainTask):
                 "Network (train/val)": self.train_val_file,
                 "Network (deploy)": self.deploy_file
             }
-        if hasattr(self,"original_file"):
-            model_files.update({"Network (original)": self.original_file})
+        if hasattr(self,"model_file"):
+            if self.model_file is not None:
+                model_files.update({"Network (original)": self.model_file})
         return model_files
 
     @override

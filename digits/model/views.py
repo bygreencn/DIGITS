@@ -5,6 +5,7 @@ from datetime import timedelta
 import io
 import json
 import math
+import os
 import tarfile
 import tempfile
 import zipfile
@@ -14,8 +15,9 @@ import werkzeug.exceptions
 
 from . import images as model_images
 from . import ModelJob
+from digits.pretrained_model.job import PretrainedModelJob
 from digits import frameworks, extensions
-from digits.utils import time_filters
+from digits.utils import time_filters, auth
 from digits.utils.routing import request_wants_json
 from digits.webapp import scheduler
 
@@ -76,13 +78,21 @@ def customize():
     elif epoch == -1:
         snapshot = job.train_task().pretrained_model
     else:
+
         for filename, e in job.train_task().snapshots:
             if e == epoch:
                 snapshot = job.path(filename)
                 break
 
+    if isinstance(job,PretrainedModelJob):
+        model_def = open(job.get_model_def_path(),'r')
+        network = model_def.read()
+        snapshot = job.get_weights_path()
+    else:
+        network = job.train_task().get_network_desc()
+
     return json.dumps({
-            'network': job.train_task().get_network_desc(),
+            'network': network,
             'snapshot': snapshot
             })
 
@@ -167,6 +177,58 @@ def visualize_lr():
         datalist.append(data)
 
     return json.dumps({'data': {'columns': datalist}})
+
+@auth.requires_login
+@blueprint.route('/<job_id>/to_pretrained',methods=['GET', 'POST'])
+def to_pretrained(job_id):
+    job = scheduler.get_job(job_id)
+
+    if job is None:
+        raise werkzeug.exceptions.NotFound('Job not found')
+
+    epoch = -1
+    # GET ?epoch=n
+    if 'epoch' in flask.request.args:
+        epoch = float(flask.request.args['epoch'])
+
+    # POST ?snapshot_epoch=n (from form)
+    elif 'snapshot_epoch' in flask.request.form:
+        epoch = float(flask.request.form['snapshot_epoch'])
+
+    # Write the stats of the job to json,
+    # and store in tempfile (for archive)
+    info = job.json_dict(verbose=False,epoch=epoch)
+
+    task = job.train_task()
+    snapshot_filename = None
+    snapshot_filename = task.get_snapshot(epoch)
+
+    # Set defaults:
+    labels_path = None
+    resize_mode = None
+
+    if "labels file" in info:
+        labels_path = os.path.join(task.dataset.dir(), info["labels file"])
+    if "image resize mode" in info:
+        resize_mode = info["image resize mode"]
+
+    job = PretrainedModelJob(
+        snapshot_filename,
+        os.path.join(job.dir(), task.model_file) ,
+        labels_path,
+        info["framework"],
+        info["image dimensions"][2],
+        resize_mode,
+        info["image dimensions"][0],
+        info["image dimensions"][1],
+        username = auth.get_username(),
+        name = info["name"]
+    )
+
+    scheduler.add_job(job)
+
+    return flask.redirect(flask.url_for('digits.views.home',tab=3)), 302
+
 
 @blueprint.route('/<job_id>/download',
         methods=['GET', 'POST'],

@@ -159,6 +159,16 @@ class ModelForm(Form):
                 raise validators.ValidationError(
                     'Solver type not supported by this framework')
 
+    ### Additional settings specific to selected solver
+
+    rms_decay = utils.forms.FloatField('RMS decay value',
+            default = 0.99,
+            validators = [
+                validators.NumberRange(min=0),
+                ],
+            tooltip = "If the gradient updates results in oscillations the gradient is reduced by times 1-rms_decay. Otherwise it will be increased by rms_decay."
+            )
+
     ### Learning rate
 
     learning_rate = utils.forms.MultiFloatField('Base Learning Rate',
@@ -228,6 +238,7 @@ class ModelForm(Form):
             choices = [
                 ('standard', 'Standard network'),
                 ('previous', 'Previous network'),
+                ('pretrained', 'Pretrained network'),
                 ('custom', 'Custom network'),
                 ],
             default='standard',
@@ -255,6 +266,14 @@ class ModelForm(Form):
             choices = [],
             validators = [
                 validate_required_iff(method='previous'),
+                selection_exists_in_choices,
+                ],
+            )
+
+    pretrained_networks = wtforms.RadioField('Pretrained Networks',
+            choices = [],
+            validators = [
+                validate_required_iff(method='pretrained'),
                 selection_exists_in_choices,
                 ],
             )
@@ -337,6 +356,10 @@ class ModelForm(Form):
                 validators.DataRequired()
                 ],
             tooltip = "An identifier, later used to refer to this model in the Application."
+            )
+
+    group_name = utils.forms.StringField('Group Name',
+            tooltip = "An optional group name for organization on the main page."
             )
 
     # allows shuffling data during training (for frameworks that support this, as indicated by

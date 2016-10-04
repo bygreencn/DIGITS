@@ -33,7 +33,7 @@ return function(params)
     -- -- This is a LeNet model. For more information: http://yann.lecun.com/exdb/lenet/
 
     local lenet = nn.Sequential()
-    lenet:add(nn.MulConstant(0.00390625))
+    lenet:add(nn.MulConstant(0.0125)) -- 1/(standard deviation on MNIST dataset)
     lenet:add(backend.SpatialConvolution(channels,20,5,5,1,1,0)) -- channels*28*28 -> 20*24*24
     lenet:add(backend.SpatialMaxPooling(2, 2, 2, 2)) -- 20*24*24 -> 20*12*12
     lenet:add(backend.SpatialConvolution(20,50,5,5,1,1,0)) -- 20*12*12 -> 50*8*8
@@ -44,27 +44,8 @@ return function(params)
     lenet:add(nn.Linear(500, nclasses))  -- 500 -> nclasses
     lenet:add(nn.LogSoftMax())
 
-    local model
-    if params.ngpus > 1 then
-      local gpus = torch.range(1, params.ngpus):totable()
-      local fastest, benchmark
-      local use_cudnn = cudnn ~= nil
-      if use_cudnn then
-        fastest, benchmark = cudnn.fastest, cudnn.benchmark
-      end
-      model = nn.DataParallelTable(1, true, true):add(lenet,gpus):threads(function()
-            if use_cudnn then
-              local cudnn = require 'cudnn'
-              cudnn.fastest, cudnn.benchmark = fastest, benchmark
-            end
-      end)
-      model.gradInput = nil
-    else
-      model = lenet
-    end
-
     return {
-        model = model,
+        model = lenet,
         loss = nn.ClassNLLCriterion(),
         trainBatchSize = 64,
         validationBatchSize = 32,

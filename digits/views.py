@@ -15,7 +15,7 @@ import werkzeug.exceptions
 from .config import config_value
 from .webapp import app, socketio, scheduler
 import digits
-from digits import dataset, extensions, model, utils
+from digits import dataset, extensions, model, utils, pretrained_model
 from digits.log import logger
 from digits.utils.routing import request_wants_json
 
@@ -23,7 +23,7 @@ blueprint = flask.Blueprint(__name__, __name__)
 
 @blueprint.route('/index.json', methods=['GET'])
 @blueprint.route('/', methods=['GET'])
-def home():
+def home(tab=2):
     """
     DIGITS home page
     Returns information about each job on the server
@@ -82,8 +82,19 @@ def home():
                 },
             }
 
+        load_model_options = {
+            'Images': {
+                'pretrained-model': {
+                    'title': 'Upload Pretrained Model',
+                    'id': 'uploadPretrainedModel',
+                    'url': flask.url_for(
+                        'digits.pretrained_model.views.new'),
+                    },
+                },
+            }
+
         # add dataset options for known dataset extensions
-        data_extensions = config_value('data_extension_list')
+        data_extensions = extensions.data.get_extensions()
         for extension in data_extensions:
             ext_category = extension.get_category()
             ext_title = extension.get_title()
@@ -107,12 +118,14 @@ def home():
 
         return flask.render_template(
             'home.html',
+            tab=tab,
             new_dataset_options=new_dataset_options,
             running_datasets=running_datasets,
             completed_datasets=completed_datasets,
             new_model_options=new_model_options,
             running_models=running_models,
             completed_models=completed_models,
+            load_model_options=load_model_options,
             total_gpu_count=len(scheduler.resources['gpus']),
             remaining_gpu_count=sum(r.remaining()
                                     for r in scheduler.resources['gpus']),
@@ -123,6 +136,7 @@ def json_dict(job, model_output_fields):
     d = {
         'id': job.id(),
         'name': job.name(),
+        'group': job.group,
         'status': job.status_of_tasks().name,
         'status_css': job.status_of_tasks().css,
         'submitted': job.status_history[0][1],
@@ -170,9 +184,19 @@ def json_dict(job, model_output_fields):
 
     if isinstance(job, dataset.DatasetJob):
         d.update({ 'type': 'dataset' })
+
     if isinstance(job, model.ModelJob):
         d.update({ 'type': 'model' })
 
+    if isinstance(job, pretrained_model.PretrainedModelJob):
+        model_output_fields.add("has_labels")
+        model_output_fields.add("username")
+        d.update({
+            'type': 'pretrained_model',
+            'framework': job.framework,
+            'username': job.username,
+            'has_labels': job.has_labels_file()
+        })
     return d
 
 @blueprint.route('/completed_jobs.json', methods=['GET'])
@@ -180,20 +204,22 @@ def completed_jobs():
     """
     Returns JSON
         {
-            datasets: [{id, name, status, status_css, submitted, elapsed, badge}],
-            models:   [{id, name, status, status_css, submitted, elapsed, badge}],
+            datasets: [{id, name, group, status, status_css, submitted, elapsed, badge}],
+            models:   [{id, name, group, status, status_css, submitted, elapsed, badge}],
         }
     """
     completed_datasets  = get_job_list(dataset.DatasetJob, False)
     completed_models    = get_job_list(model.ModelJob, False)
     running_datasets  = get_job_list(dataset.DatasetJob, True)
     running_models    = get_job_list(model.ModelJob, True)
+    pretrained_models = get_job_list(pretrained_model.PretrainedModelJob,False)
 
     model_output_fields = set()
     data = {
         'running': [json_dict(j, model_output_fields) for j in running_datasets + running_models],
         'datasets': [json_dict(j, model_output_fields) for j in completed_datasets],
         'models': [json_dict(j, model_output_fields) for j in completed_models],
+        'pretrained_models': [json_dict(j, model_output_fields) for j in pretrained_models],
         'model_output_fields': sorted(list(model_output_fields)),
     }
 
@@ -218,6 +244,56 @@ def get_job_list(cls, running):
             reverse=True,
             )
 
+@blueprint.route('/group', methods=['GET','POST'])
+def group():
+    """
+    Assign the group for the listed jobs
+    """
+    not_found = 0
+    forbidden = 0
+    group_name = utils.routing.get_request_arg('group_name').strip()
+    job_ids = flask.request.form.getlist('job_ids[]')
+    error = []
+    for job_id in job_ids:
+        try:
+            job = scheduler.get_job(job_id)
+            if job is None:
+                logger.warning('Job %s not found for group assignment.' % job_id)
+                not_found += 1
+                continue
+
+            if not utils.auth.has_permission(job, 'edit'):
+                logger.warning('Group assignment not permitted for job %s' % job_id)
+                forbidden += 1
+                continue
+
+            job.group = group_name
+
+            # update form data so updated name gets used when cloning job
+            if hasattr(job, 'form_data'):
+                job.form_data['form.group_name.data'] = job.group
+
+            job.emit_attribute_changed('group', job.group)
+
+        except Exception as e:
+            error.append(e)
+            pass
+
+    for job_id in job_ids:
+        job = scheduler.get_job(job_id)
+
+    error = []
+    if not_found:
+        error.append('%d job%s not found.' % (not_found, '' if not_found == 1 else 's'))
+
+    if forbidden:
+        error.append('%d job%s not permitted to be regrouped.' % (forbidden, '' if forbidden == 1 else 's'))
+
+    if len(error) > 0:
+        error = ' '.join(error)
+        raise werkzeug.exceptions.BadRequest(error)
+
+    return 'Jobs regrouped.'
 
 ### Authentication/login
 
@@ -276,6 +352,8 @@ def show_job(job_id):
         return flask.redirect(flask.url_for('digits.dataset.views.show', job_id=job_id))
     if isinstance(job, model.ModelJob):
         return flask.redirect(flask.url_for('digits.model.views.show', job_id=job_id))
+    if isinstance(job, pretrained_model.PretrainedModelJob):
+        return flask.redirect(flask.url_for('digits.pretrained_model.views.show', job_id=job_id))
     else:
         raise werkzeug.exceptions.BadRequest('Invalid job type')
 
@@ -298,6 +376,7 @@ def edit_job(job_id):
         if not name:
             raise werkzeug.exceptions.BadRequest('name cannot be blank')
         job._name = name
+        job.emit_attribute_changed('name', job.name())
         # update form data so updated name gets used when cloning job
         if 'form.dataset_name.data' in job.form_data:
             job.form_data['form.dataset_name.data'] = name
@@ -336,6 +415,7 @@ def job_status(job_id):
         result['type'] = job.job_type()
     return json.dumps(result)
 
+@blueprint.route('/pretrained_models/<job_id>', methods=['DELETE'])
 @blueprint.route('/datasets/<job_id>', methods=['DELETE'])
 @blueprint.route('/models/<job_id>', methods=['DELETE'])
 @blueprint.route('/jobs/<job_id>', methods=['DELETE'])
@@ -414,9 +494,7 @@ def abort_jobs():
     forbidden = 0
     failed = 0
     job_ids = flask.request.form.getlist('job_ids[]')
-    print job_ids
     for job_id in job_ids:
-        print job_id
 
         try:
             job = scheduler.get_job(job_id)
